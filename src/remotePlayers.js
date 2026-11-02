@@ -1,81 +1,65 @@
-// The other players in the room, drawn in the world (after Clean-leaves-for-loot's remotePlayers.js):
-// each is their Bloxity avatar standing in their equipped boat (hull, engines in the equipped
-// engine's colours x the boat's engine count), their trail behind it, their pets hovering round it,
-// their partner on the deck and a name tag, eased toward the pose the server last relayed (net.js
-// roster), plus speed x heading for the time since (dead reckoning), so fast racers glide instead
-// of stepping. Poses are in TRACK coordinates (z minus the sender's race scroll): drawn at
-// z + this player's own scroll, racers line up in the lane and lobby players slide away with the
-// start island while this player races. Diffed against the roster every frame, so joins / leaves /
-// gear changes need no events. Nearest first, capped (fewer on touch); pets, partner and trail only
-// up close; a remote boat is `lite` (boat.js) and its hull baked, without shadows (draw calls).
+// The other players in the room, drawn in the world: their Bloxity look (skin, accessories, proportions),
+// the same locomotion / carry / bench animations as the local avatar, the vehicle held overhead, the
+// press on the gym bench, platform emotes and chat bubbles. Poses come from the synced roster
+// (net.js, backend PlayerState), eased toward the last pose plus speed x heading for the time since
+// (dead reckoning), so others glide instead of stepping. Diffed against the roster every frame, so
+// joins, leaves and changes need no events. Nearest first and capped (fewer on touch); name tags only up close.
+import * as THREE from 'three'
 import { Group } from 'three'
-import { BOATS, COARSE_POINTER, NET } from './config.js'
-import { roster, net, sameWorld } from './net.js'
-import { createBoat } from './boat.js'
-import { buildBoat } from './boatModels.js'
-import { ENGINES } from './engine.js'
-import { trailById } from './trails.js'
-import { createTrail } from './trail.js'
-import { createCompanions } from './companions.js'
+import { COARSE_POINTER, GYM, NET, PLAYER_DIMS, YARD } from './config.js'
+import { roster, net } from './net.js'
+import * as bloxity from './bloxity.js'
+import { makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
 import { label } from './propkit.js'
-import { bake } from './bake.js'
 import { buildDefaultCharacter, loadBaseCharacter } from './avatar/character.js'
 import { applyProportions, attachEquippedAccessories } from './avatar/loader.js'
 import { disposeAnimator, makeAnimator } from './avatar/animator.js'
 
-const angleDelta = (from, to) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
-const engineById = new Map(ENGINES.map((e) => [e.id, e]))
-const boatById = new Map(BOATS.list.map((b) => [b.id, b]))
 const MAX = COARSE_POINTER ? NET.maxRemotesTouch : NET.maxRemotes
+const ease = (t) => t * t * (3 - 2 * t)
+const angleDelta = (from, to) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
 
-// "dog:0,cat:2" -> [{ kind, tier }]
-function parsePets(s) {
-  if (!s) return []
-  return s.split(',').map((x) => {
-    const [kind, tier] = x.split(':')
-    return { kind, tier: Number(tier) || 0 }
-  })
-}
-
-// A catalog hull merged to a few meshes (one per material), shadows off: cheap to draw many.
-function bakedHull(id) {
-  const src = buildBoat(id)
-  const model = bake(src)
-  model.userData = { ...src.userData }
-  src.traverse((o) => o.isMesh && o.geometry.dispose()) // the baked copy keeps the materials
-  return model
+function parseCarry(json) {
+  if (!json) return null
+  try {
+    const c = JSON.parse(json)
+    return c && c.type ? c : null
+  } catch {
+    return null
+  }
 }
 
 class Remote {
   constructor(scene) {
     this.scene = scene
     this.group = new Group()
+    this.group.rotation.order = 'YXZ'
     this.group.visible = false
     scene.add(this.group)
-    this.boat = createBoat({ lite: true })
-    this.group.add(this.boat.root)
-    this.trail = createTrail(scene, this.boat.root)
-    this.companions = createCompanions(scene, this.boat.seat)
     this.avatar = null
     this.animator = null
     this.avatarJson = null // what the current rig was built from
     this.generation = 0
-    this.applied = {} // boat / engine / trail / pets / partner / name as last applied
     this.label = null
+    this.name = ''
     this.placed = false
-    this.detail = true
     this.base = { x: 0, y: 0, z: 0, yaw: 0, speed: 0, at: 0, key: '' }
-    this.lastY = 0
-    this.vy = 0
+    this.facing = 0
+    this.speed = 0
+    this.carryKey = ''
+    this.vehicle = null
+    this.carryW = 0
+    this.benchW = 0
+    this.emoteSeq = 0
     this.setAvatar(buildDefaultCharacter())
   }
 
   setAvatar(next) {
-    if (this.avatar) this.boat.rider.remove(this.avatar)
+    if (this.avatar) this.group.remove(this.avatar)
     disposeAnimator(this.animator)
     this.avatar = next
     next.traverse((o) => o.isMesh && (o.castShadow = false)) // shadow passes add up in a full room
-    this.boat.rider.add(next)
+    this.group.add(next)
     this.animator = makeAnimator(next)
   }
 
@@ -103,175 +87,190 @@ class Remote {
     }
   }
 
-  // Gear and name: rebuilt only when they change.
-  syncGear(p) {
-    const a = this.applied
-    if (p.boat !== a.boat) {
-      a.boat = p.boat
-      const model = bakedHull(boatById.has(p.boat) ? p.boat : BOATS.start.equipped) // none sent yet: the starter
-      const old = this.boat.setHull(model)
-      model.traverse((o) => o.isMesh && (o.castShadow = false))
-      old.traverse((o) => o.isMesh && o.geometry.dispose())
-      a.engine = undefined // the engine count comes with the boat
+  syncName(name) {
+    name = name || 'Player'
+    if (name === this.name) return
+    this.name = name
+    if (this.label) {
+      this.group.remove(this.label)
+      this.label.material.map?.dispose()
+      this.label.material.dispose()
     }
-    if (p.engine !== a.engine) {
-      a.engine = p.engine
-      const count = boatById.get(boatById.has(p.boat) ? p.boat : BOATS.start.equipped)?.engines ?? 1
-      this.boat.setEngines(engineById.get(p.engine)?.look ?? null, count)
+    this.label = label(name, 0.5, { color: '#ffffff', outline: '#1a0a14', font: '700 64px Fredoka, sans-serif', outlineWidth: 10 })
+    this.label.position.y = PLAYER_DIMS.height + 1.6
+    this.group.add(this.label)
+  }
+
+  // The vehicle held overhead, rebuilt only when it changes.
+  syncCarry(json) {
+    if (json === this.carryKey) return
+    this.carryKey = json
+    if (this.vehicle) {
+      this.scene.remove(this.vehicle.root)
+      this.vehicle = null
     }
-    if (p.trail !== a.trail) {
-      a.trail = p.trail
-      a.trailShown = undefined
-    }
-    if (p.pets !== a.pets) {
-      a.pets = p.pets
-      this.companions.setPets(parsePets(p.pets))
-    }
-    if (p.partner !== a.partner) {
-      a.partner = p.partner
-      this.companions.setPartner(p.partner)
-    }
-    const name = p.username || 'Player'
-    if (name !== a.name) {
-      a.name = name
-      if (this.label) {
-        this.group.remove(this.label)
-        this.label.material.map?.dispose()
-        this.label.material.dispose()
-      }
-      this.label = label(name, 0.5, { color: '#ffffff', outline: '#1a0a14', font: '700 64px Fredoka, sans-serif', outlineWidth: 10 })
-      this.label.position.y = 3.6
-      this.group.add(this.label)
+    const spec = parseCarry(json)
+    if (!spec) return
+    try {
+      const model = vehicleModel(spec.type, spec.paint)
+      const material = spec.variant && spec.variant !== 'normal' ? variantMaterial(spec.variant) : sharedMaterial()
+      this.vehicle = makeVehicle(model, material)
+      this.vehicle.root.scale.setScalar(YARD.carryScale)
+      this.vehicle.mesh.castShadow = false
+      this.scene.add(this.vehicle.root)
+    } catch (err) {
+      console.warn('[remote] unknown vehicle', spec, err)
     }
   }
 
-  // Pets, partner and trail only up close.
-  setDetail(on) {
-    if (on === this.detail) return
-    this.detail = on
-    this.companions.setVisible(on)
-    this.applied.trailShown = undefined
+  async playEmote(id) {
+    if (!id) return this.animator?.stopEmote()
+    const clip = (await bloxity.loadEmotes()).get(id)?.clip
+    if (clip) this.animator?.playEmote(clip)
   }
 
-  update(p, dt, t, now, scroll, scrollSpeed, camera, near) {
-    this.syncGear(p)
-    this.syncAvatar(p.avatar)
-    this.setDetail(near)
-    const trail = near ? p.trail : ''
-    if (trail !== this.applied.trailShown) {
-      this.applied.trailShown = trail
-      this.trail.set(trail ? trailById(trail) : null)
-    }
+  setVisible(on) {
+    this.group.visible = on
+    if (this.vehicle) this.vehicle.root.visible = on
+  }
 
-    // A new pose resets the dead-reckoning base.
+  update(dt, p, gym) {
     const b = this.base
+    const now = performance.now()
     const key = `${p.x}|${p.y}|${p.z}|${p.yaw}|${p.speed}`
-    if (key !== b.key) Object.assign(b, { key, x: p.x, y: p.y, z: p.z, yaw: p.yaw, speed: p.speed, at: now })
-    const ahead = Math.min((now - b.at) / 1000, NET.predictMax) * b.speed
-    const tx = b.x + Math.sin(b.yaw) * ahead
-    const tz = b.z + Math.cos(b.yaw) * ahead + scroll
+    if (key !== b.key) {
+      Object.assign(b, { x: p.x, y: p.y, z: p.z, yaw: p.yaw, speed: p.speed, at: now, key })
+    }
+    // Dead reckoning along the heading, for a moment only.
+    const age = Math.min(0.25, (now - b.at) / 1000)
+    const tx = b.x + Math.sin(b.yaw) * b.speed * age
+    const tz = b.z + Math.cos(b.yaw) * b.speed * age
+    const k = this.placed ? 1 - Math.exp(-NET.remoteLerp * dt) : 1
     const g = this.group
-    const far = Math.hypot(tx - g.position.x, tz - g.position.z) > 30
-    const k = this.placed && !far ? 1 - Math.exp(-NET.remoteLerp * dt) : 1
-    g.position.x += (tx - g.position.x) * k
-    g.position.y += (b.y - g.position.y) * k
-    g.position.z += (tz - g.position.z) * k
-    g.rotation.y += angleDelta(g.rotation.y, b.yaw) * k
-    this.vy = this.placed && dt > 0 ? this.vy + ((g.position.y - this.lastY) / dt - this.vy) * Math.min(1, dt * 10) : 0
-    this.lastY = g.position.y
+    const px = g.position.x
+    const py = g.position.y
+    const pz = g.position.z
+
+    // On a bench the avatar lies on it (placeAvatar's pose); otherwise on its feet.
+    const bench = p.bench >= 0 ? gym?.benches?.[p.bench] : null
+    this.benchW += ((bench ? 1 : 0) - this.benchW) * (1 - Math.exp(-6 * dt))
+    const w = ease(Math.min(1, this.benchW))
+    let x = tx
+    let y = b.y
+    let z = tz
+    let yaw = b.yaw
+    if (bench && w > 0.001) {
+      x += (bench.x - x) * w
+      y += (GYM.feetY - y) * w
+      z += (bench.wz(GYM.feetZ) - z) * w
+      yaw += angleDelta(yaw, bench.yaw) * w
+    }
+    g.position.set(this.placed ? px + (x - px) * k : x, this.placed ? py + (y - py) * k : y, this.placed ? pz + (z - pz) * k : z)
+    this.facing += angleDelta(this.facing, yaw) * (this.placed ? Math.min(1, 14 * dt) : 1)
+    g.rotation.y = this.facing
+    g.rotation.x = (-Math.PI / 2) * w
     this.placed = true
 
-    this.boat.update(dt, b.speed, 0, t)
-    this.animator?.update(dt, { grounded: Math.abs(this.vy) < 0.5, speed: 0, verticalVelocity: this.vy, turn: 0 })
-    if (near) {
-      this.companions.update(dt, t, g.position.x, g.position.y, g.position.z, g.rotation.y)
-      if (this.applied.trailShown) this.trail.update(dt, camera, scrollSpeed)
-    }
-  }
+    // Speed from the actual movement, so the legs match what is drawn.
+    const moved = dt > 0 ? Math.hypot(g.position.x - px, g.position.z - pz) / dt : 0
+    this.speed += (Math.min(moved, 40) - this.speed) * Math.min(1, 10 * dt)
+    const shown = this.speed < 0.3 ? 0 : this.speed
 
-  hide() {
-    this.group.visible = false
-    this.companions.setVisible(false)
-    if (this.applied.trailShown) this.trail.set(null)
-    this.applied.trailShown = ''
-    this.detail = false
-    this.placed = false // snap into place when it comes back
+    this.carryW += ((this.carryKey ? 1 : 0) - this.carryW) * (1 - Math.exp(-10 * dt))
+    this.animator?.update(dt, {
+      grounded: p.grounded !== false,
+      speed: shown,
+      verticalVelocity: p.vy || 0,
+      turn: 0,
+      load: { grip: 0, carry: this.carryW, toss: 0 },
+      bench: { w, rep: p.benchRep ?? 1 },
+    })
+
+    if (this.vehicle) {
+      const { root, model } = this.vehicle
+      const s = YARD.carryScale
+      const sway = Math.sin(now * 0.009 + this.facing) * Math.min(1, shown / 8)
+      root.position.set(g.position.x, g.position.y + PLAYER_DIMS.height + YARD.headClear + model.hy * s + Math.abs(sway) * 0.1, g.position.z)
+      root.rotation.set(0, this.facing, sway * 0.06)
+    }
+    if (p.emoteSeq !== this.emoteSeq) {
+      this.emoteSeq = p.emoteSeq
+      void this.playEmote(p.emote)
+    }
   }
 
   dispose() {
-    this.generation++ // an avatar still loading is dropped
     this.scene.remove(this.group)
+    if (this.vehicle) this.scene.remove(this.vehicle.root)
     disposeAnimator(this.animator)
-    this.trail.dispose()
-    this.companions.dispose() // takes the partner (shared, cached geometry) off the seat first
-    this.boat.rider.remove(this.avatar) // rig geometry is shared with every other character
     if (this.label) {
       this.label.material.map?.dispose()
       this.label.material.dispose()
     }
-    this.boat.root.traverse((o) => o.isMesh && o.geometry.dispose()) // hull + engines: this boat's own
   }
 }
 
-export function createRemotePlayers(scene) {
+// gym: createGym's result (the benches' world transforms). localRoot: the local player's group (chat bubbles).
+export function createRemotePlayers(scene, { gym, localRoot, getPosition }) {
   const remotes = new Map() // sessionId -> Remote
-  const list = [] // reused each frame: [{ id, p, d }]
+  const order = []
 
-  function clear() {
-    for (const r of remotes.values()) r.dispose()
-    remotes.clear()
-  }
-
-  return {
-    get count() {
-      return remotes.size
-    },
-    // Dev: what each drawn remote costs (meshes = draw calls; shadow casters draw again).
-    stats() {
-      return [...remotes.values()].filter((r) => r.group.visible).map((r) => {
-        const st = { meshes: 0, shadow: 0 }
-        r.group.traverseVisible((o) => {
-          if (!o.isMesh && !o.isSprite) return
-          st.meshes++
-          if (o.castShadow) st.shadow++
-        })
-        st.pets = r.companions.petCount
-        st.meshes += st.pets + (r.applied.trailShown ? 1 : 0)
-        return { boat: r.applied.boat, engine: r.applied.engine, ...st }
-      })
-    },
-    // viewer: this player's drawn position; scroll: this player's race scroll (m, race.trackScroll)
-    // and its speed (m/s, for the trails); camera for the trails.
-    update(dt, t, viewer, scroll, scrollSpeed, camera) {
-      const players = roster()
-      if (!players) return remotes.size && clear()
-      const mine = net.sessionId
-      list.length = 0
-      players.forEach((p, id) => {
-        if (id === mine || !sameWorld(p)) return // a player in the other world isn't here
-        list.push({ id, p, d: Math.hypot(p.x - viewer.x, p.z + scroll - viewer.z) })
-      })
-      list.sort((a, b) => a.d - b.d)
-      const now = performance.now()
-      const keep = new Set()
-      for (let i = 0; i < Math.min(MAX, list.length); i++) {
-        const { id, p, d } = list[i]
-        keep.add(id)
-        let r = remotes.get(id)
-        if (!r) remotes.set(id, (r = new Remote(scene)))
-        const range = p.racing ? NET.raceFade : NET.remoteFade
-        if (d > range) {
-          if (r.group.visible || r.placed) r.hide()
-          continue
-        }
-        r.group.visible = true
-        r.update(p, dt, t, now, scroll, scrollSpeed, camera, d < NET.detailRange)
+  // Chat lines become bubbles over the speaker: the local player, or the roster entry with that name.
+  bloxity.onChat((m) => {
+    try {
+      const text = bloxity.chatBubbleText(m)
+      if (!text) return
+      let root = m.isLocalPlayer ? localRoot : null
+      if (!root) {
+        for (const r of remotes.values()) if (r.name === (m.username || 'Player')) root = r.group
       }
-      for (const [id, r] of remotes) {
-        if (keep.has(id)) continue
+      if (root) bloxity.attachChatBubble(THREE, root, text)
+    } catch {
+      // Bubbles are decoration.
+    }
+  })
+
+  function update(dt) {
+    const players = roster()
+    if (!players) {
+      if (remotes.size) {
+        for (const r of remotes.values()) r.dispose()
+        remotes.clear()
+      }
+      return
+    }
+    const me = getPosition()
+    order.length = 0
+    players.forEach((p, id) => {
+      if (id === net.sessionId) return
+      order.push({ id, p, d: Math.hypot(p.x - me.x, p.z - me.z) })
+    })
+    order.sort((a, b) => a.d - b.d)
+
+    const seen = new Set()
+    order.forEach(({ id, p, d }, i) => {
+      seen.add(id)
+      const show = i < MAX && d < NET.remoteFade
+      let r = remotes.get(id)
+      if (!show) {
+        r?.setVisible(false)
+        return
+      }
+      if (!r) remotes.set(id, (r = new Remote(scene)))
+      r.setVisible(true)
+      r.syncName(p.username)
+      r.syncAvatar(p.avatar || '')
+      r.syncCarry(p.carry || '')
+      r.update(dt, p, gym)
+      if (r.label) r.label.visible = d < NET.nameTag
+    })
+    for (const [id, r] of remotes) {
+      if (!seen.has(id)) {
         r.dispose()
         remotes.delete(id)
       }
-    },
+    }
   }
+
+  return { update, count: () => remotes.size }
 }

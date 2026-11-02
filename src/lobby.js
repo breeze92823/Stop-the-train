@@ -1,546 +1,927 @@
 import {
-  AdditiveBlending,
   BoxGeometry,
   CanvasTexture,
-  Color,
-  ConeGeometry,
+  CircleGeometry,
   CylinderGeometry,
+  DodecahedronGeometry,
   DoubleSide,
-  ExtrudeGeometry,
+  Euler,
   Group,
   InstancedMesh,
-  LatheGeometry,
   Matrix4,
+  Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   PlaneGeometry,
-  RepeatWrapping,
-  SRGBColorSpace,
-  Shape,
-  SphereGeometry,
+  RingGeometry,
+  ShaderMaterial,
   Sprite,
   SpriteMaterial,
-  TorusGeometry,
-  Vector2,
+  SRGBColorSpace,
+  TextureLoader,
+  Vector3,
 } from 'three'
-import { LOBBY, SPAWN, WATER } from './config.js'
-import { makeEngine } from './boat.js'
-import { paintChecker, paintChevrons, paintFade, paintSoftDot } from './textures.js'
-import { fontReady, glow, label, neon, put, solidBox, solidPole, std } from './propkit.js'
-import { createEmitter } from './particles.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { ADS, FUSE, LOBBY, MAILBOX_REACH, SET, TRACK } from './config.js'
+import { bake } from './bake.js'
+import * as bloxity from './bloxity.js'
+import { ICONS } from './hud.js'
+import { label, liveLabel, neon, put, rainbowLabel, solidBox, solidPole, std } from './propkit.js'
+import { chestLeft, claimChest, compact, onChange, refillChest, state as progress } from './progress.js'
+import { net, requestAdReward } from './net.js'
+import { player } from './player.js'
+import { mulberry32, paintHazard, paintLego, toTexture } from './textures.js'
+import { dashedRect, terraceTop } from './world.js'
 
-// Everything standing on the lobby beach, laid out like the reference shot
-// from the spawn looking toward the sea (-Z):
-//  - the START gate at the shoreline: two black posts, a black banner, a
-//    glowing yellow start pad with a light curtain, and red/yellow buoy ropes
-//    marking the lane out to sea; three red arrows bob above it
-//  - red chevron barriers on both sides, a checkered pink walkway with a
-//    neon yellow rim inland of the right one, with four hero statues on it in
-//    front of the taller wall (name + stat tags, coloured auras and sparkles)
-//  - on the left: the Engine Upgrade machine (caged, flaming, smoking, a
-//    glowing gold ring, a parked log raft), two engine rockets hovering over
-//    glowing pads with sparkles
-// The palms and the striped umbrella are scenery, built per world (environment.js).
-// Solid props get fixed colliders so the boat cannot drive through them.
-const G = LOBBY.gate
-const C = LOBBY.colors
+// Everything standing on the lawn: the Upgrade stall and its NPC, the Fuse Machine, the
+// ADMIN ABUSE sign, the mailbox, the galaxy portal, trees, palms, rocks and the floating
+// signs. Static meshes are baked to a handful of draw calls; what moves stays apart.
 
-// --- Start gate -------------------------------------------------------------------
-function bannerTexture() {
-  const c = document.createElement('canvas')
-  c.width = 1460
-  c.height = 200
-  const draw = () => {
-    const ctx = c.getContext('2d')
-    ctx.fillStyle = C.banner
-    ctx.fillRect(0, 0, c.width, c.height)
-    ctx.fillStyle = '#ffffff'
-    ctx.font = '700 168px Fredoka, "Arial Black", sans-serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.letterSpacing = '18px'
-    ctx.fillText('START', c.width / 2, c.height / 2 + 8)
-  }
-  draw()
-  const tex = new CanvasTexture(c)
-  tex.colorSpace = SRGBColorSpace
-  tex.anisotropy = 8
-  fontReady.then(() => {
-    draw()
-    tex.needsUpdate = true
+const box = (w, h, d) => new BoxGeometry(w, h, d)
+
+function legoMat(a, b, tile = 4) {
+  const t = paintLego({ a, b, size: 256, perCell: 3, strength: 2.6 })
+  return new MeshStandardMaterial({
+    map: toTexture(t.color, { repeat: 1 / tile, srgb: true }),
+    normalMap: toTexture(t.normal, { repeat: 1 / tile }),
+    roughness: 0.6,
   })
-  return tex
 }
 
-function arrowGeometry() {
-  const s = new Shape()
-  s.moveTo(-0.42, 1.6)
-  s.lineTo(0.42, 1.6)
-  s.lineTo(0.42, 0.2)
-  s.lineTo(1.05, 0.2)
-  s.lineTo(0, -1.2)
-  s.lineTo(-1.05, 0.2)
-  s.lineTo(-0.42, 0.2)
-  s.closePath()
-  const geo = new ExtrudeGeometry(s, { depth: 0.35, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.08, bevelSegments: 2 })
-  geo.translate(0, 0, -0.175)
-  return geo
-}
-
-function buildGate(root, animated) {
-  const hw = G.halfWidth
-  const gate = new Group()
-  gate.position.z = G.z
-  root.add(gate)
-
-  const black = std('#15161c', { roughness: 0.4 })
-  const post = new CylinderGeometry(0.5, 0.6, G.postHeight, 18)
-  const ball = new SphereGeometry(1.0, 20, 12)
-  for (const side of [-1, 1]) {
-    put(gate, post, black, side * hw, G.postHeight / 2, 0)
-    put(gate, ball, black, side * hw, G.postHeight + 0.7, 0)
-    solidPole(0.7, G.postHeight, side * hw, G.z)
-  }
-
-  // Banner: START on both faces, dark ends, a blue trim along the bottom and sides.
-  const face = std('#ffffff', { map: bannerTexture(), roughness: 0.5 })
-  const dark = std(C.banner)
-  const bw = hw * 2 - 0.4
-  put(gate, new BoxGeometry(bw, G.bannerHeight, 0.6), [dark, dark, dark, dark, face, face], 0, G.bannerY, 0)
-  const trimMat = std(C.bannerFrame, { emissive: C.bannerFrame, emissiveIntensity: 0.35 })
-  put(gate, new BoxGeometry(bw + 0.2, 0.36, 0.8), trimMat, 0, G.bannerY - G.bannerHeight / 2 - 0.12, 0)
-  put(gate, new BoxGeometry(bw + 0.2, 0.26, 0.8), trimMat, 0, G.bannerY + G.bannerHeight / 2 + 0.08, 0)
-  for (const side of [-1, 1]) put(gate, new BoxGeometry(0.3, G.bannerHeight, 0.8), trimMat, side * (bw / 2), G.bannerY, 0)
-
-  // Glowing start pad, its rim, and a light curtain rising from it.
-  const padMat = std(C.pad, { emissive: C.pad, emissiveIntensity: 0.9, roughness: 0.4 })
-  put(gate, new BoxGeometry(hw * 2 + 2, 0.2, G.padDepth), padMat, 0, 0.1, 0, false).receiveShadow = true
-  put(gate, new BoxGeometry(hw * 2 + 2.6, 0.14, 0.5), std('#ff9d1a', { emissive: '#ff8a00', emissiveIntensity: 0.6 }), 0, 0.08, G.padDepth / 2 + 0.2, false)
-  const fade = new CanvasTexture(paintFade('#fff6c0'))
-  fade.colorSpace = SRGBColorSpace
-  const curtainMat = new MeshBasicMaterial({ map: fade, transparent: true, opacity: 0.9, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, fog: false })
-  put(gate, new PlaneGeometry(hw * 2 + 1.5, 6), curtainMat, 0, 3.1, 0, false)
-  animated.push((t) => (curtainMat.opacity = 0.7 + Math.sin(t * 3) * 0.15))
-
-  // Three red arrows pointing down at the gate.
-  const arrowMat = std(C.arrow, { emissive: '#7a0000', emissiveIntensity: 0.35, roughness: 0.45 })
-  const ag = arrowGeometry()
-  const arrows = [-1, 0, 1].map((i) => {
-    const a = put(gate, ag, arrowMat, i * G.arrowSpacing, G.arrowY, 0)
-    a.rotation.z = -i * 0.42
-    a.scale.setScalar(G.arrowScale)
-    return a
-  })
-  animated.push((t) => {
-    arrows.forEach((a, i) => (a.position.y = G.arrowY + Math.sin(t * 3.2 + i * 0.6) * 0.8))
-  })
-
-  // Buoy ropes out to sea from each post (hidden while racing: race.js draws a longer, scrolling lane).
-  const lane = new Group()
-  gate.add(lane)
-  const L = LOBBY.lane
-  const count = Math.floor(L.length / L.buoySpacing)
-  const buoys = new InstancedMesh(new SphereGeometry(0.55, 14, 10), std('#ffffff', { roughness: 0.35 }), count * 2)
-  const m = new Matrix4()
-  const red = new Color(C.buoyA)
-  const yellow = new Color(C.buoyB)
-  let n = 0
-  for (const side of [-1, 1]) {
-    for (let i = 0; i < count; i++) {
-      m.makeScale(1, 0.8, 1).setPosition(side * hw, WATER.level + 0.18, -G.padDepth / 2 - 2 - i * L.buoySpacing)
-      buoys.setMatrixAt(n, m)
-      buoys.setColorAt(n++, i % 2 ? yellow : red)
-    }
-    const rope = put(lane, new CylinderGeometry(0.06, 0.06, L.length, 6), std('#f5f5f5'), side * hw, WATER.level + 0.25, -G.padDepth / 2 - 2 - L.length / 2, false)
-    rope.rotation.x = Math.PI / 2
-  }
-  buoys.castShadow = true
-  lane.add(buoys)
-  return lane
-}
-
-// --- Barriers, walkway and statues on the shoreline wings --------------------------
-// A barrier line from its gate end `from` to `to`, as unit vectors: `u` points
-// back toward the gate, `n` points inland (toward the spawn). `at(t, off)` is
-// the point t metres from the gate end, `off` metres inland.
-function barrierLine({ from, to }) {
-  const len = Math.hypot(to[0] - from[0], to[1] - from[1])
-  const ux = (from[0] - to[0]) / len
-  const uz = (from[1] - to[1]) / len
-  let nx = -uz
-  let nz = ux
-  if ((SPAWN.x - from[0]) * nx + (SPAWN.z - from[1]) * nz < 0) {
-    nx = -nx
-    nz = -nz
-  }
-  const at = (t, off = 0) => ({ x: from[0] - ux * t + nx * off, z: from[1] - uz * t + nz * off })
-  return { len, ux, uz, nx, nz, at, yaw: Math.atan2(-uz, ux) }
-}
-
-// A box laid along part of a barrier line, `off` metres inland of it (negative = behind it).
-function alongLine(root, line, t0, t1, off, size, y, mat) {
-  const a = line.at(t0, off)
-  const b = line.at(t1, off)
-  const len = t1 - t0
-  const m = put(root, new BoxGeometry(len, size[0], size[1]), mat, (a.x + b.x) / 2, y, (a.z + b.z) / 2)
-  m.rotation.y = line.yaw
-  solidBox(len / 2, size[0] / 2, size[1] / 2, m.position.x, y, m.position.z, line.yaw)
+// The turning dashed rings on the lawn: n arcs in one mesh.
+function dashRing(r, width, n, fill, material) {
+  const arcs = []
+  for (let i = 0; i < n; i++) arcs.push(new RingGeometry(r - width, r, 24, 1, (i / n) * Math.PI * 2, ((Math.PI * 2) / n) * fill))
+  const m = new Mesh(mergeGeometries(arcs), material)
+  m.rotation.x = -Math.PI / 2
   return m
 }
 
-function buildBarriers(root) {
-  const B = LOBBY.barrier
-  const chevrons = paintChevrons(C.barrier)
-  const cap = std('#ffffff', { roughness: 0.5 })
-  const plain = std(C.barrier, { roughness: 0.55 })
-  for (const spec of B.lines) {
-    if (spec.wall === 0) continue
-    const line = barrierLine(spec)
-    const len = spec.wall ?? line.len // metres of chevron wall from the gate end
-    const height = spec.height ?? B.height
-    // Local +X runs toward the gate so the chevrons point at it. If local +Z
-    // faces the sea, the wall is turned round and the texture mirrored.
-    const facesInland = -line.uz * line.nx + line.ux * line.nz > 0
-    const tex = new CanvasTexture(chevrons)
-    tex.colorSpace = SRGBColorSpace
-    tex.wrapS = RepeatWrapping
-    tex.repeat.set((facesInland ? 1 : -1) * Math.round(len / (height * 2)), 1)
-    const face = std('#ffffff', { map: tex, roughness: 0.55 })
-    const wall = alongLine(root, line, 0, len, 0, [height, 0.45], height / 2, [plain, plain, plain, plain, face, face])
-    if (!facesInland) wall.rotation.y += Math.PI
-    const top = put(root, new BoxGeometry(len, 0.14, 0.62), cap, wall.position.x, height + 0.07, wall.position.z)
-    top.rotation.y = line.yaw
-  }
-
-  // Raised checkered pink walkways (red sides, neon yellow rim on both long
-  // edges) inland of the flagged lines.
-  const W = LOBBY.walkway
-  const side = std(C.barrier, { roughness: 0.6 })
-  const rim = neon('#ffc21a', 2.2)
-  for (const spec of B.lines) {
-    const line = barrierLine(spec)
-    if (!spec.walkway) continue
-    const len = line.len - 2
-    const checks = new CanvasTexture(paintChecker(C.walkway, C.walkwayLight))
-    checks.colorSpace = SRGBColorSpace
-    checks.wrapS = checks.wrapT = RepeatWrapping
-    checks.repeat.set(len / W.check, W.width / W.check)
-    const top = std('#ffffff', { map: checks, roughness: 0.7 })
-    alongLine(root, line, 1, line.len - 1, 0.25 + W.width / 2, [W.height, W.width], W.height / 2, [side, side, top, side, side, side])
-    for (const off of [0.3, 0.25 + W.width - 0.05]) alongLine(root, line, 1, line.len - 1, off, [0.1, 0.18], W.height + 0.04, rim)
-  }
+// A built set piece as a few merged meshes, standing where the group stood.
+function settle(root, group) {
+  const out = bake(group, true)
+  out.position.copy(group.position)
+  out.rotation.copy(group.rotation)
+  root.add(out)
+  return out
 }
 
-// Blocky hero statue (~2.3 m), front +Z.
-function makeStatue(look) {
-  const g = new Group()
-  const skin = std(look.skin ?? '#f2c79a')
-  const legGeo = new BoxGeometry(0.44, 0.95, 0.46)
-  const armGeo = new BoxGeometry(0.4, 0.95, 0.42)
-  put(g, legGeo, std(look.legL ?? look.legs), -0.24, 0.475, 0)
-  put(g, legGeo, std(look.legR ?? look.legs), 0.24, 0.475, 0)
-  put(g, new BoxGeometry(0.96, 0.98, 0.5), std(look.torso), 0, 1.44, 0)
-  const armL = put(g, armGeo, std(look.armL ?? look.arms), -0.7, 1.44, 0)
-  const armR = put(g, armGeo, std(look.armR ?? look.arms), 0.7, 1.44, 0)
-  put(g, new CylinderGeometry(0.34, 0.34, 0.62, 18), look.mask ? std(look.mask) : skin, 0, 2.25, 0)
-  look.extra?.(g, { armL, armR })
+// BoxGeometry whose UVs run in metres, so studs stay one size on any box.
+function legoBox(w, h, d) {
+  const g = new BoxGeometry(w, h, d)
+  const uv = g.attributes.uv
+  const sizes = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]]
+  for (let f = 0; f < 6; f++) {
+    for (let i = 0; i < 4; i++) {
+      const at = f * 4 + i
+      uv.setXY(at, uv.getX(at) * sizes[f][0], uv.getY(at) * sizes[f][1])
+    }
+  }
   return g
 }
 
-const STATUES = [
-  {
-    name: 'HARLEY QUINN',
-    partner: 'jester', // the PARTNER it sells (interact.js)
-    color: '#ff4fd8',
-    stat: '40',
-    aura: '#ff6ad8',
-    torso: '#d8263a',
-    arms: '#16161e',
-    armR: '#d8263a',
-    legL: '#16161e',
-    legR: '#d8263a',
-    skin: '#f7f1ec',
-    extra(g) {
-      put(g, new BoxGeometry(0.72, 0.18, 0.72), std('#f4e27a'), 0, 2.62, 0)
-      put(g, new BoxGeometry(0.16, 0.5, 0.16), std('#e8263a'), -0.42, 2.35, 0)
-      put(g, new BoxGeometry(0.16, 0.5, 0.16), std('#2a5cff'), 0.42, 2.35, 0)
-    },
-  },
-  {
-    name: 'CAPTAIN AMERICA',
-    partner: 'superhero', // the PARTNER it sells (interact.js)
-    color: '#ff3b3b',
-    stat: '4999',
-    aura: '#ffd84a',
-    torso: '#2a4fb0',
-    arms: '#2a4fb0',
-    legs: '#2a4fb0',
-    mask: '#2a4fb0',
-    extra(g) {
-      put(g, new BoxGeometry(0.98, 0.14, 0.52), std('#e8263a'), 0, 1.1, 0)
-      put(g, new BoxGeometry(0.2, 0.2, 0.05), std('#ffffff', { emissive: '#ffffff', emissiveIntensity: 0.2 }), 0, 1.6, 0.27)
-      // Shield on the left arm.
-      const shield = new Group()
-      shield.position.set(-0.98, 1.4, 0.15)
-      shield.rotation.set(Math.PI / 2, 0, Math.PI / 2)
-      ;[['#e8263a', 0.5], ['#f4f4f4', 0.38], ['#e8263a', 0.27], ['#2a4fb0', 0.16]].forEach(([c, r], i) => put(shield, new CylinderGeometry(r, r, 0.06, 24), std(c), 0, i * 0.012, 0))
-      g.add(shield)
-    },
-  },
-  {
-    name: 'HACKER',
-    partner: 'hacker', // the PARTNER it sells (interact.js)
-    color: '#ff3b3b',
-    stat: '1999',
-    aura: '#3dff6a',
-    torso: '#15161c',
-    arms: '#2bd14a',
-    legs: '#15161c',
-    mask: '#15161c',
-    extra(g) {
-      const eye = std('#3dff6a', { emissive: '#3dff6a', emissiveIntensity: 1.2 })
-      put(g, new BoxGeometry(0.12, 0.08, 0.04), eye, -0.13, 2.3, 0.33)
-      put(g, new BoxGeometry(0.12, 0.08, 0.04), eye, 0.13, 2.3, 0.33)
-      put(g, new BoxGeometry(0.8, 0.5, 0.06), std('#2bd14a', { emissive: '#1a8a2e', emissiveIntensity: 0.4 }), 0, 1.5, 0.26)
-    },
-  },
-  {
-    name: 'BATMAN',
-    partner: 'batman', // the PARTNER it sells (interact.js)
-    color: '#ff3b3b',
-    stat: '699',
-    aura: '#8a7bff',
-    torso: '#20222e',
-    arms: '#20222e',
-    legs: '#20222e',
-    mask: '#20222e',
-    skin: '#20222e',
-    extra(g) {
-      put(g, new BoxGeometry(1.0, 0.12, 0.54), std('#f2c21a'), 0, 1.0, 0)
-      const ear = new ConeGeometry(0.09, 0.3, 4)
-      put(g, ear, std('#20222e'), -0.2, 2.7, 0)
-      put(g, ear, std('#20222e'), 0.2, 2.7, 0)
-      const cape = put(g, new BoxGeometry(1.2, 1.9, 0.06), std('#111219', { side: DoubleSide }), 0, 1.05, -0.32)
-      cape.rotation.x = 0.12
-    },
-  },
-]
-
-// The statues stand on the pink walkway in front of the (taller) statue wall.
-// Each one's spot (above its head) goes into `spots` for its interact prompt.
-function buildStatues(root, spots) {
-  const S = LOBBY.statues
-  const W = LOBBY.walkway
-  const right = barrierLine(LOBBY.barrier.lines.find((l) => l.statues))
-  const auraTex = new CanvasTexture(paintSoftDot(128))
-  auraTex.colorSpace = SRGBColorSpace
-  const auraBoxes = []
-  const sparkleBoxes = []
-  STATUES.forEach((look, i) => {
-    const p = right.at(S.at[i], 0.25 + W.width * 0.4)
-    const statue = makeStatue(look)
-    statue.scale.setScalar(S.scale)
-    statue.position.set(p.x, W.height, p.z)
-    statue.rotation.y = Math.atan2(SPAWN.x - p.x, SPAWN.z - p.z)
-    root.add(statue)
-    const tag = label(`${look.name}\n⊕ ${look.stat}`, 0.85, { colors: [look.color, '#7dff6a'], outline: '#1a0a14', font: '700 64px Fredoka, sans-serif', outlineWidth: 10 })
-    tag.position.set(p.x, W.height + 3.4 * S.scale, p.z)
-    root.add(tag)
-    spots.push({ partner: look.partner, x: p.x, y: W.height + 2.7 * S.scale, z: p.z })
-    solidBox(0.6 * S.scale, 1.2 * S.scale, 0.4 * S.scale, p.x, W.height + 1.2 * S.scale, p.z, statue.rotation.y)
-    // A soft pool of the statue's aura colour on the walkway under it.
-    const pool = new Sprite(new SpriteMaterial({ map: auraTex, color: look.aura, transparent: true, opacity: 0.5, blending: AdditiveBlending, depthWrite: false }))
-    pool.scale.set(2.4 * S.scale, 2.4 * S.scale, 1)
-    pool.position.set(p.x, W.height + 1.0 * S.scale, p.z)
-    root.add(pool)
-    auraBoxes.push({ x: p.x, y: W.height + 0.3, z: p.z, sx: 0.6, sy: 0.2, sz: 0.6, color: look.aura })
-    sparkleBoxes.push({ x: p.x, y: W.height + 1.3 * S.scale, z: p.z, sx: 0.8, sy: 1.2, sz: 0.8, color: look.aura })
-  })
-  // Each statue glows in its colour: wisps rising off it and sparkles around it.
-  createEmitter(root, {
-    boxes: auraBoxes, count: 120, life: 1.6, velocity: [0, 1.3, 0], spread: [0.35, 0.4, 0.35],
-    size: 0.55, grow: 0.3, intensity: 2.6, opacity: 0.7, seed: 61,
-  })
-  createEmitter(root, {
-    boxes: sparkleBoxes, count: 48, life: 2.2, velocity: [0, 0.5, 0], spread: [0.25, 0.25, 0.25],
-    size: 0.38, intensity: 3, twinkle: 7, sprite: 'sparkle', seed: 62,
-  })
-}
-
-// --- Rockets on glowing pads ----------------------------------------------------------
-function makeRocket({ body, nose, fin, stripe }) {
+// --- Upgrade stall ---------------------------------------------------------------------
+function buildNpc() {
   const g = new Group()
-  const v = (pts) => pts.map(([r, y]) => new Vector2(r, y))
-  put(g, new LatheGeometry(v([[0, 0], [0.36, 0.04], [0.5, 0.42], [0.55, 1.25], [0.5, 2.1]]), 28), std(body, { roughness: 0.35 }))
-  put(g, new LatheGeometry(v([[0.5, 2.1], [0.4, 2.6], [0.22, 3.0], [0, 3.25]]), 28), std(nose, { roughness: 0.35 }))
-  put(g, new CylinderGeometry(0.555, 0.555, 0.14, 28), std(stripe), 0, 0.95, 0)
-  put(g, new CylinderGeometry(0.3, 0.4, 0.3, 20, 1, true), std('#30343c', { metalness: 0.6, roughness: 0.3, side: DoubleSide }), 0, -0.1, 0)
-  // Porthole.
-  const port = put(g, new TorusGeometry(0.17, 0.05, 8, 20), std('#d8dde8', { metalness: 0.5, roughness: 0.3 }), 0, 1.6, 0.53)
-  port.rotation.x = -0.08
-  put(g, new SphereGeometry(0.16, 16, 8), std('#3aa0ff', { emissive: '#1a5cff', emissiveIntensity: 0.5, roughness: 0.15 }), 0, 1.6, 0.47).scale.z = 0.5
-  // Four fins.
-  const s = new Shape()
-  s.moveTo(0.4, 1.0)
-  s.lineTo(1.02, 0.1)
-  s.lineTo(1.0, -0.35)
-  s.lineTo(0.45, 0.05)
-  s.closePath()
-  const finGeo = new ExtrudeGeometry(s, { depth: 0.08, bevelEnabled: false })
-  finGeo.translate(0, 0, -0.04)
-  const finMat = std(fin, { roughness: 0.4 })
-  for (let i = 0; i < 4; i++) {
-    const f = put(g, finGeo, finMat)
-    f.rotation.y = (i * Math.PI) / 2 + Math.PI / 4
-  }
-  // Little exhaust flame.
-  const flame = put(g, new ConeGeometry(0.26, 0.9, 14, 1, true), glow('#ffb347'), 0, -0.7, 0, false)
-  flame.rotation.x = Math.PI
-  return { group: g, flame }
+  const black = std('#16161a')
+  const red = std('#d61f26')
+  const white = std('#f4f4f4')
+  put(g, box(0.9, 0.95, 0.5), black, 0, 0.62, 0)
+  put(g, box(0.34, 0.26, 0.04), white, 0, 0.74, 0.26)
+  put(g, box(0.22, 0.12, 0.05), red, 0, 0.74, 0.28)
+  const head = put(g, box(0.72, 0.68, 0.68), white, 0, 1.46, 0)
+  put(g, box(0.76, 0.2, 0.72), red, 0, 1.84, 0)
+  put(g, box(0.76, 0.16, 0.72), white, 0, 1.98, 0)
+  put(g, box(0.5, 0.14, 0.08), std('#111111'), 0, 1.46, 0.36)
+  put(g, box(0.2, 0.2, 0.06), new MeshStandardMaterial({ color: '#ffffff', roughness: 0.2 }), -0.18, 1.46, 0.4)
+  put(g, box(0.2, 0.2, 0.06), new MeshStandardMaterial({ color: '#ffffff', roughness: 0.2 }), 0.18, 1.46, 0.4)
+  put(g, box(0.3, 0.05, 0.05), std('#8a1a20'), 0, 1.24, 0.36)
+  // Arms out, legs dangling over the counter, as in the reference.
+  const armL = put(g, box(0.3, 0.86, 0.3), red, -0.62, 0.72, 0.1)
+  const armR = put(g, box(0.3, 0.86, 0.3), red, 0.62, 0.72, 0.1)
+  armL.rotation.z = -0.7
+  armR.rotation.z = 0.7
+  const legL = put(g, box(0.34, 0.9, 0.34), red, -0.22, 0.05, 0.42)
+  const legR = put(g, box(0.34, 0.9, 0.34), red, 0.22, 0.05, 0.42)
+  legL.rotation.x = legR.rotation.x = 1.25
+  head.userData.isHead = true
+  return g
 }
 
-function buildRocketPad(root, animated, spots, { x, z, name, engine, label: labelColor, ...look }) {
-  const s = LOBBY.rocketScale
-  const base = new Group()
-  base.position.set(x, 0, z)
-  base.scale.setScalar(s)
-  root.add(base)
-  put(base, new CylinderGeometry(1.7, 1.85, 0.3, 32), std('#1f7bff', { emissive: '#0a4cff', emissiveIntensity: 0.55, roughness: 0.35 }), 0, 0.15, 0)
-  const ring = put(base, new TorusGeometry(1.45, 0.09, 8, 40), neon('#4fe0ff'), 0, 0.31, 0, false)
-  ring.rotation.x = Math.PI / 2
-  const fade = new CanvasTexture(paintFade('#6fd8ff'))
-  fade.colorSpace = SRGBColorSpace
-  const beamMat = new MeshBasicMaterial({ map: fade, transparent: true, opacity: 0.55, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, fog: false })
-  put(base, new CylinderGeometry(1.45, 1.45, 2.4, 32, 1, true), beamMat, 0, 1.5, 0, false)
-  solidPole(1.8 * s, 1.2 * s, x, z)
-  // Blue sparkles drifting up through the beam.
-  createEmitter(root, {
-    boxes: [{ x, y: 1.4 * s, z, sx: 1.4 * s, sy: 1.0 * s, sz: 1.4 * s }],
-    count: 30, life: 2.4, velocity: [0, 0.9, 0], spread: [0.2, 0.3, 0.2],
-    size: 0.45, color: '#8fe8ff', intensity: 3, twinkle: 6, sprite: 'sparkle', seed: Math.round(Math.abs(x) * 10),
-  })
-
-  const rocket = makeRocket(look)
-  rocket.group.scale.setScalar(0.95)
-  base.add(rocket.group)
-  const tag = label(name, 0.42, { color: labelColor, outline: '#1a0a14', font: '700 64px Fredoka, sans-serif', outlineWidth: 10 })
-  tag.position.y = 4.6
-  base.add(tag)
-  spots.push({ engine, x, y: 4.2 * s, z })
-  const phase = x * 0.3
-  animated.push((t) => {
-    rocket.group.position.y = 1.0 + Math.sin(t * 1.8 + phase) * 0.18
-    rocket.group.rotation.y = t * 0.6 + phase
-    rocket.flame.scale.y = 0.8 + Math.abs(Math.sin(t * 27 + phase)) * 0.4
-    beamMat.opacity = 0.45 + Math.sin(t * 2.4 + phase) * 0.12
-  })
+function buildStall(root) {
+  const { x, z, yaw } = SET.stall
+  const s = new Group()
+  s.position.set(x, 0, z)
+  s.rotation.y = yaw
+  const wood = legoMat('#ef9130', '#e8872a', 2)
+  const post = std('#e8862b')
+  const W = 8.6
+  const D = 4.4
+  put(s, legoBox(W, 0.42, D), wood, 0, 0.21, 0)
+  put(s, legoBox(W - 0.4, 1.3, 0.5), wood, 0, 1.03, D / 2 - 0.45)
+  put(s, legoBox(0.5, 1.3, D - 1.4), wood, -W / 2 + 0.45, 1.03, -0.3)
+  put(s, legoBox(0.5, 1.3, D - 1.4), wood, W / 2 - 0.45, 1.03, -0.3)
+  put(s, legoBox(W + 0.3, 0.34, 1.1), wood, 0, 1.86, D / 2 - 0.45)
+  for (const [px, pz] of [[-W / 2 + 0.4, D / 2 - 0.4], [W / 2 - 0.4, D / 2 - 0.4], [-W / 2 + 0.4, -D / 2 + 0.4], [W / 2 - 0.4, -D / 2 + 0.4]]) {
+    put(s, box(0.34, 4.6, 0.34), post, px, 2.5, pz)
+  }
+  // Striped awning, sloping down to the front.
+  const pink = legoMat('#f4216d', '#ef1c66', 2)
+  const white = legoMat('#ffffff', '#f4f4f4', 2)
+  const aw = new Group()
+  aw.position.set(0, 5.05, 0.5)
+  aw.rotation.x = 0.42
+  const n = 9
+  const sw = (W + 1.4) / n
+  for (let i = 0; i < n; i++) {
+    const m = i % 2 ? white : pink
+    put(aw, legoBox(sw, 0.2, 6.2), m, -(W + 1.4) / 2 + sw * (i + 0.5), 0, 0)
+    put(aw, legoBox(sw, 0.72, 0.16), m, -(W + 1.4) / 2 + sw * (i + 0.5), -0.42, 3.05)
+  }
+  s.add(aw)
+  // The crate leaning at the corner.
+  const crate = put(s, legoBox(1.5, 1.5, 1.5), legoMat('#e39a3c', '#d68a2f', 2), -W / 2 - 0.5, 0.7, 2)
+  crate.rotation.set(0.1, 0.5, 0.16)
+  const baked = settle(root, s)
+  const npcRaw = buildNpc()
+  const npc = bake(npcRaw, true)
+  npc.position.set(0.2, 2.03, 1.72)
+  baked.add(npc)
+  solidBox(W / 2, 2, D / 2, x, 2, z, yaw)
+  return { npc }
 }
 
-// --- Engine Upgrade machine -------------------------------------------------------------
-function buildUpgrade(root, animated, spots) {
-  const { x, z, scale: s } = LOBBY.upgrade
-  const g = new Group()
-  g.position.set(x, 0, z)
-  g.scale.setScalar(s)
-  root.add(g)
-  const red = std('#d81f26', { roughness: 0.4 })
-  const darkRed = std('#8e1015', { roughness: 0.5 })
-  const metal = std('#3a3f48', { metalness: 0.6, roughness: 0.35 })
-
-  // Gold ring on the sand.
-  const ring = put(g, new TorusGeometry(2.6, 0.13, 10, 48), neon('#ffd21a'), 0, 0.08, 0, false)
-  ring.rotation.x = Math.PI / 2
-  put(g, new CylinderGeometry(1.6, 1.7, 0.4, 28), darkRed, 0, 0.2, 0)
-  // Machine body: a red cabinet with a grille and a big engine drum on top.
-  put(g, new BoxGeometry(1.9, 1.7, 1.6), red, 0, 1.25, 0)
-  for (let i = 0; i < 4; i++) put(g, new BoxGeometry(1.3, 0.08, 0.05), metal, 0, 0.75 + i * 0.28, 0.82)
-  const drum = put(g, new CylinderGeometry(0.75, 0.75, 1.5, 24), red, 0, 2.55, 0)
-  drum.rotation.z = Math.PI / 2
-  for (const dx of [-0.5, 0, 0.5]) {
-    const band = put(g, new CylinderGeometry(0.78, 0.78, 0.1, 24), metal, dx, 2.55, 0)
-    band.rotation.z = Math.PI / 2
+// --- Fuse machine -----------------------------------------------------------------------
+function buildFuse(root) {
+  const { x, z, yaw } = SET.fuse
+  const f = new Group()
+  f.position.set(x, 0, z)
+  f.rotation.y = yaw
+  const body = std('#8d91cc', { metalness: 0.35, roughness: 0.5 })
+  const dark = std('#555a92', { metalness: 0.45, roughness: 0.5 })
+  const steel = std('#a9aee0', { metalness: 0.5, roughness: 0.4 })
+  const cyan = neon('#22e6ff', 2.4)
+  const hazard = new MeshStandardMaterial({ map: toTexture(paintHazard(), { srgb: true }), roughness: 0.5 })
+  hazard.map.repeat.set(6, 1)
+  // The stepped hull.
+  put(f, box(8.4, 0.6, 7.4), dark, 0, 0.3, 0)
+  put(f, box(7, 2.6, 6), body, 0, 1.9, -0.2)
+  put(f, box(5.8, 2, 4.6), body, 0, 4.1, -0.7)
+  put(f, box(4.4, 0.9, 3.4), steel, 0, 5.5, -1.1)
+  // The sloped front: dark window over the hazard stripe, a lit tray under it.
+  const front = new Group()
+  front.position.set(0, 3.4, 2.1)
+  front.rotation.x = -0.42
+  put(front, box(6.2, 2.8, 0.5), steel, 0, 0, 0)
+  put(front, box(5.3, 1.1, 0.14), new MeshStandardMaterial({ color: '#0d2348', emissive: '#123a78', emissiveIntensity: 0.7, metalness: 0.3, roughness: 0.15 }), 0, 0.42, 0.28)
+  put(front, box(5.5, 0.12, 0.16), cyan, 0, 1.1, 0.28, false)
+  put(front, box(5.3, 0.3, 0.16), hazard, 0, -0.38, 0.28)
+  f.add(front)
+  put(f, box(5.4, 0.2, 1.5), neon('#6df4ff', 1.6), 0, 1.5, 3)
+  put(f, box(5.8, 0.5, 1.7), dark, 0, 1.2, 3)
+  for (const s2 of [-1, 1]) {
+    put(f, box(0.16, 0.16, 5.6), cyan, s2 * 3.56, 2.6, -0.2, false)
+    put(f, box(0.14, 1.1, 0.14), cyan, s2 * 2.96, 4.3, 1.6, false)
   }
-  put(g, new CylinderGeometry(0.28, 0.36, 0.6, 16), metal, 0, 3.45, 0)
-  // Flames out of the top.
-  const flames = []
-  ;[['#ff3b12', 0.42, 1.6], ['#ff9a1a', 0.3, 1.2], ['#fff1a0', 0.16, 0.8]].forEach(([c, r, h]) => {
-    const geo = new ConeGeometry(r, h, 14, 1, true)
-    geo.translate(0, h / 2, 0)
-    flames.push(put(g, geo, glow(c, 0.9), 0, 3.7, 0, false))
-  })
-  animated.push((t) => {
-    flames.forEach((f, i) => {
-      f.scale.y = 0.8 + Math.abs(Math.sin(t * (14 + i * 5) + i)) * 0.45
-      f.scale.x = f.scale.z = 0.9 + Math.sin(t * 19 + i * 2) * 0.1
-    })
-  })
-  // Cage of dark bars around it.
-  const bar = std('#2a2d35', { metalness: 0.4, roughness: 0.4 })
-  const half = 1.45
-  const H = 3.6
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(g, new CylinderGeometry(0.06, 0.06, H, 8), bar, sx * half, H / 2 + 0.4, sz * half)
-  for (const y of [1.4, 2.6, H + 0.4]) {
-    for (const s of [-1, 1]) {
-      put(g, new BoxGeometry(half * 2, 0.08, 0.08), bar, 0, y, s * half)
-      put(g, new BoxGeometry(0.08, 0.08, half * 2), bar, s * half, y, 0)
+  // The stacks on top.
+  for (const [px, pz, r, h] of [[-1.5, -1.6, 0.86, 2.8], [1.5, -1.6, 0.86, 2.8], [0, -2.2, 0.6, 2]]) {
+    put(f, new CylinderGeometry(r, r * 1.08, h, 16), steel, px, 5.9 + h / 2, pz)
+    put(f, new CylinderGeometry(r * 1.14, r * 1.14, 0.3, 16), dark, px, 5.9 + h, pz)
+    put(f, new CylinderGeometry(r * 0.7, r * 0.7, 0.05, 16), std('#14162c'), px, 6.08 + h, pz)
+  }
+  // Three louvred feeder wings fanned round the front.
+  for (const a of [-1.3, 0, 1.3]) {
+    const w = new Group()
+    w.rotation.y = a
+    const ramp = new Group()
+    ramp.position.set(0, 0.95, 5.6)
+    ramp.rotation.x = 0.3
+    put(ramp, box(3.5, 0.5, 3.9), body, 0, 0, 0)
+    put(ramp, box(3.1, 0.1, 3.5), dark, 0, 0.28, 0)
+    for (let i = 0; i < 6; i++) put(ramp, box(2.9, 0.12, 0.24), std('#2c2f58'), 0, 0.36, -1.45 + i * 0.58)
+    for (const s2 of [-1, 1]) put(ramp, box(0.12, 0.12, 3.8), cyan, s2 * 1.7, 0.27, 0, false)
+    w.add(ramp)
+    f.add(w)
+  }
+  settle(root, f)
+  solidBox(4.2, 3.2, 3.6, x, 3.2, z, yaw)
+
+  const r = SET.fuse.ring
+  const ring = dashRing(r.r, 0.42, 4, 0.62, neon('#27e9ff', 2, { side: DoubleSide }))
+  ring.position.set(r.x, 0.03, r.z)
+  root.add(ring)
+  const title = label('FUSE MACHINE', 3.3, { colors: [['#8df2ff', '#2172ff']], outline: '#07224f', outlineWidth: 12 })
+  title.position.set(x, 12, z)
+  const count = liveLabel('0/3', 2.7, { colors: [['#ffffff', '#dfe6ff']], outline: '#0b1a3a', outlineWidth: 12 })
+  count.position.set(x, 9.9, z)
+  root.add(title, count)
+  return { ring, cyan, count }
+}
+
+// --- ADMIN ABUSE sign -----------------------------------------------------------------
+function adminScreen() {
+  const c = document.createElement('canvas')
+  c.width = 1024
+  c.height = 512
+  const draw = () => {
+    const ctx = c.getContext('2d')
+    const g = ctx.createLinearGradient(0, 0, 0, 512)
+    g.addColorStop(0, '#1b2a7a')
+    g.addColorStop(1, '#0e1650')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, 1024, 512)
+    ctx.fillStyle = '#ffffff'
+    ctx.textAlign = 'center'
+    ctx.lineJoin = 'round'
+    ctx.font = 'italic 700 176px Fredoka, "Arial Black", sans-serif'
+    ctx.textBaseline = 'middle'
+    for (const [t, y] of [['ADMIN', 160], ['ABUSE', 352]]) {
+      ctx.lineWidth = 18
+      ctx.strokeStyle = '#0a0f33'
+      ctx.strokeText(t, 512, y)
+      ctx.fillText(t, 512, y)
     }
   }
-  solidBox(1.6 * s, 2 * s, 1.6 * s, x, 2 * s, z)
-  // Smoke curling up off the flames.
-  createEmitter(root, {
-    boxes: [{ x, y: 4.4 * s, z, sx: 0.3 * s, sy: 0.2 * s, sz: 0.3 * s }],
-    count: 45, life: 3, velocity: [0, 1.6, 0], spread: [0.5, 0.4, 0.5], gravity: -0.15,
-    size: 1.1, grow: 3.2, color: '#ffe2dc', intensity: 0.9, opacity: 0.28, seed: 31,
-  })
-  // Embers flicking out of the fire.
-  createEmitter(root, {
-    boxes: [{ x, y: 4.0 * s, z, sx: 0.4 * s, sy: 0.3 * s, sz: 0.4 * s }],
-    count: 30, life: 1.4, velocity: [0, 3, 0], spread: [1.2, 1, 1.2], gravity: 2.5,
-    size: 0.16, color: '#ffb347', intensity: 4, twinkle: 9, seed: 32,
-  })
-
-  const tag = label('Engine Upgrade', 1.3, { color: '#3ff0ff', outline: '#0b2a55', outlineWidth: 16 })
-  tag.position.set(0, 5.6, 0)
-  g.add(tag)
-  spots.push({ x, y: 4.6 * s, z })
-
-  // A log raft parked beside the machine, waiting for its upgrade.
-  const raft = new Group()
-  raft.position.set(x + 3.5 * s, 0, z - 0.6 * s)
-  raft.rotation.y = -0.35
-  root.add(raft)
-  const log = new CylinderGeometry(0.19, 0.19, 2.6, 12)
-  log.rotateX(Math.PI / 2)
-  const wood = [std('#b07a45', { roughness: 0.85 }), std('#9a6538', { roughness: 0.85 })]
-  for (let i = 0; i < 5; i++) put(raft, log, wood[i % 2], (i - 2) * 0.38, 0.2, 0)
-  for (const side of [-1, 1]) {
-    const e = makeEngine()
-    e.group.position.set(side * 1.25, 0.32, -0.3)
-    raft.add(e.group)
-    e.flame.visible = false
-  }
-  put(raft, new BoxGeometry(2.9, 0.1, 0.2), metal, 0, 0.36, -0.3)
-  solidBox(1.3, 0.5, 1.3, raft.position.x, 0.5, raft.position.z, raft.rotation.y)
+  draw()
+  const t = new CanvasTexture(c)
+  t.colorSpace = SRGBColorSpace
+  document.fonts?.load('italic 700 96px Fredoka').then(() => {
+    draw()
+    t.needsUpdate = true
+  }).catch(() => {})
+  return t
 }
 
-export function createLobby(scene) {
-  const root = new Group()
-  root.name = 'lobby'
-  scene.add(root)
-  const animated = [] // fn(elapsed) per animated prop
+function buildAdmin(root) {
+  const { x, z, yaw } = SET.admin
+  const a = new Group()
+  a.position.set(x, 0, z)
+  a.rotation.y = yaw
+  const purple = legoMat('#6b5fd0', '#6256c6', 2)
+  const lilac = std('#c9b6f5')
+  put(a, legoBox(10.4, 0.34, 7.4), purple, 0, 0.17, 0)
+  put(a, box(10.8, 0.12, 7.8), lilac, 0, 0.06, 0)
+  put(a, legoBox(8.8, 0.5, 5.8), purple, 0, 0.56, 0)
+  const panel = new Group()
+  panel.position.set(0, 2.9, 0.1)
+  panel.rotation.x = -0.32
+  put(panel, box(8.8, 4.8, 0.5), std('#4e43b4'), 0, 0, -0.12)
+  put(panel, new PlaneGeometry(8.1, 4.1), new MeshStandardMaterial({ map: adminScreen(), roughness: 0.35, emissive: '#ffffff', emissiveIntensity: 0.25, emissiveMap: null }), 0, 0, 0.14, false)
+  a.add(panel)
+  settle(root, a)
+  solidBox(5.2, 2.6, 3.7, x, 2.6, z, yaw)
 
-  const lane = buildGate(root, animated)
-  buildBarriers(root)
-  // Where each shop object's interact prompt sits (interact.js).
-  const spots = { statues: [], upgrade: [], rockets: [] }
-  buildStatues(root, spots.statues)
-  buildUpgrade(root, animated, spots.upgrade)
-  for (const r of LOBBY.rockets) buildRocketPad(root, animated, spots.rockets, r)
+  const update = label('NEW UPDATE', 1.5, { colors: [['#ff5cf2', '#a020f0']], outline: '#2a0a4a' })
+  update.position.set(x, 8.2, z)
+  const timer = liveLabel('05:01:10:49', 1.7, { color: '#ffffff', outline: '#0b0b12' })
+  timer.position.set(x, 6.8, z)
+  root.add(update, timer)
+  return { timer }
+}
 
+// --- Mailbox + portal + boards ------------------------------------------------------------
+function buildMailbox(root) {
+  const { x, z } = SET.mailbox
+  const m = new Group()
+  m.position.set(x, 0, z)
+  const white = legoMat('#ffffff', '#eef0f6', 2)
+  const red = std('#c9151f')
+  put(m, box(0.42, 3.2, 0.42), red, 0, 1.6, 0)
+  put(m, legoBox(1.3, 0.2, 2.2), white, 0, 3.26, 0)
+  put(m, legoBox(1.3, 0.8, 2.2), white, 0, 3.7, 0)
+  const lid = put(m, new CylinderGeometry(0.65, 0.65, 2.2, 16, 1, false, 0, Math.PI), white, 0, 4.1, 0)
+  lid.rotation.set(Math.PI / 2, 0, Math.PI / 2)
+  put(m, box(1.32, 1.1, 0.06), std('#ff6b75'), 0, 3.8, 1.12)
+  const flag = put(m, box(0.08, 1.2, 0.34), red, 0.72, 4.3, 0.1)
+  flag.rotation.x = 0.2
+  settle(root, m)
+  solidPole(0.35, 3.2, x, z)
+  const white2 = new MeshBasicMaterial({ color: '#ffffff' })
+  const dash = new Group()
+  dashedRect(dash, x - 3.2, z - 3, x + 3.2, z + 3, white2, { dash: 1, gap: 0.7, width: 0.24 })
+  root.add(bake(dash, false))
+  const a = label('FEEDBACKS', 1.5, { colors: [['#fff36a', '#ffb400']], outline: '#2c1a00' })
+  a.position.set(x, 6.7, z)
+  const b = label('LEAVE YOUR FEEDBACK!', 0.76, { color: '#ffffff', outline: '#0b0b12' })
+  b.position.set(x, 5.5, z)
+  root.add(a, b)
+  return { pos: new Vector3(x, 0, z), reach: MAILBOX_REACH }
+}
+
+const PORTAL_FRAG = /* glsl */ `
+  varying vec2 vUv;
+  uniform float time;
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;
+    float r = length(p);
+    if (r > 1.0) discard;
+    float a = atan(p.y, p.x);
+    // Logarithmic arms: a galaxy winding in on itself.
+    float arm = sin(a * 2.0 + log(r + 0.04) * 5.5 - time * 1.8) * 0.5 + 0.5;
+    float fine = sin(a * 5.0 + log(r + 0.04) * 11.0 - time * 3.1) * 0.5 + 0.5;
+    vec3 deep = vec3(0.2, 0.03, 0.55);
+    vec3 pink = vec3(1.0, 0.5, 0.95);
+    vec3 pale = vec3(1.0, 0.92, 1.0);
+    vec3 col = mix(deep, pink, smoothstep(0.25, 0.85, arm) * smoothstep(1.02, 0.25, r));
+    col = mix(col, pale, pow(arm, 3.0) * (0.35 + fine * 0.65) * smoothstep(0.95, 0.2, r));
+    col += pale * pow(max(0.0, 1.0 - r * 2.6), 2.0) * 1.6;
+    gl_FragColor = vec4(col * 1.25, 1.0);
+  }`
+
+function buildPortal(root) {
+  const { x, z, yaw } = SET.portal
+  const p = new Group()
+  p.position.set(x, 4, z)
+  p.rotation.y = yaw
+  p.scale.setScalar(0.82)
+  const uniforms = { time: { value: 0 } }
+  const disc = new Mesh(
+    new CircleGeometry(3.5, 48),
+    new ShaderMaterial({
+      uniforms,
+      side: DoubleSide,
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: PORTAL_FRAG,
+    }),
+  )
+  p.add(disc)
+  // The rim is rough blocks of dark void, not a ring.
+  const rand = mulberry32(13)
+  const rim = new Group()
+  const voidA = std('#3b1c9e', { emissive: '#5420d8', emissiveIntensity: 0.55 })
+  const voidB = std('#26126e', { emissive: '#3a14a8', emissiveIntensity: 0.4 })
+  for (let i = 0; i < 44; i++) {
+    const a = (i / 44) * Math.PI * 2
+    const s = 0.7 + rand() * 0.55
+    const d = 3.72 + rand() * 0.42
+    const m = put(rim, box(s, s, 0.7 + rand() * 0.5), i % 3 ? voidA : voidB, Math.cos(a) * d, Math.sin(a) * d, 0, false)
+    m.rotation.z = a + rand() * 0.5
+  }
+  p.add(bake(rim, true))
+  const shardMat = std('#2c1570', { emissive: '#4416b8', emissiveIntensity: 0.8 })
+  const SHARDS = 16
+  const shards = new InstancedMesh(box(1, 1, 1), shardMat, SHARDS)
+  shards.frustumCulled = false
+  const items = []
+  for (let i = 0; i < SHARDS; i++) items.push({ a: rand() * Math.PI * 2, d: 4.9 + rand() * 1.4, v: 0.12 + rand() * 0.2, s: rand() * 0.5 + 0.3, z: (rand() - 0.5) * 1.2 })
+  p.add(shards)
+  root.add(p)
+  const ringCfg = SET.portal.ring
+  const ring = dashRing(ringCfg.r, 0.3, 4, 0.7, new MeshBasicMaterial({ color: '#1426e0', side: DoubleSide }))
+  ring.position.set(ringCfg.x, 0.03, ringCfg.z)
+  root.add(ring)
+  const a = label('GALAXY WORLD', 1.5, { colors: [['#ff7af0', '#b325ff']], outline: '#1d0a3a' })
+  a.position.set(x, 9.3, z)
+  const b = label('36 REBIRTHS', 1.3, { colors: [['#ff5cf2', '#a020f0']], outline: '#1d0a3a' })
+  b.position.set(x, 8, z)
+  root.add(a, b)
+  return { uniforms, shards, items, ring, pos: new Vector3(ringCfg.x, 0, ringCfg.z), reach: ringCfg.r }
+}
+
+// The leaderboards: the server's top ten per stat (net.js `leaderboard`), the local player alone offline.
+let serverBoards = null
+function boardCanvas(entry) {
+  const c = document.createElement('canvas')
+  c.width = 512
+  c.height = 700
+  const tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = 4
+  let shown = null
+  const draw = () => {
+    const name = String(bloxity.authState?.user?.username ?? bloxity.authState?.user?.name ?? 'You')
+    const value = progress[entry.stat] ?? 0
+    const rows = serverBoards?.boards?.[entry.stat] ?? null
+    const key = rows ? JSON.stringify(rows) : `${name}|${value}`
+    if (key === shown) return
+    shown = key
+    const ctx = c.getContext('2d')
+    ctx.fillStyle = '#f9b858'
+    ctx.fillRect(0, 0, 512, 700)
+    ctx.textBaseline = 'middle'
+    for (let i = 0; i < 10; i++) {
+      const y = 12 + i * 68
+      ctx.fillStyle = i % 2 ? '#f2a944' : '#f6b050'
+      ctx.fillRect(14, y, 484, 62)
+      ctx.fillStyle = '#5a3208'
+      ctx.textAlign = 'left'
+      ctx.font = '700 34px Fredoka, "Arial Black", sans-serif'
+      ctx.fillText(`${i + 1}`, 24, y + 33)
+      ctx.fillStyle = i ? 'rgba(90,50,8,0.22)' : '#3b1e04'
+      ctx.fillRect(74, y + 9, 44, 44)
+      const row = rows ? rows[i] : i === 0 ? { name, value } : null
+      if (row) {
+        ctx.fillText(String(row.name).slice(0, 14), 130, y + 33)
+        ctx.textAlign = 'right'
+        ctx.fillStyle = entry.colors[1]
+        ctx.fillText(compact(row.value), 490, y + 33)
+      } else {
+        ctx.fillRect(130, y + 26, 190, 10)
+        ctx.fillRect(420, y + 26, 66, 10)
+      }
+    }
+    tex.needsUpdate = true
+  }
+  draw()
+  return { tex, draw }
+}
+
+function buildBoards(root) {
+  const { x, z, list } = SET.boards
+  const base = new Group()
+  base.position.set(x, 0, z)
+  const purple = legoMat('#7a6ee0', '#6d61d4', 4)
+  put(base, legoBox(9, 0.3, 26), purple, 0, 0.15, 0, false)
+  put(base, box(9.6, 0.12, 26.6), std('#c9b6f5'), 0, 0.06, 0, false)
+  settle(root, base)
+  addPlatform(x, z)
+  const face = legoMat('#ffc266', '#f7b553', 2)
+  const frame = std('#e08a2e')
+  const faces = []
+  for (const b of list) {
+    const g = new Group()
+    g.position.set(x, 0.3, b.z)
+    g.rotation.y = Math.PI / 2
+    const W = b.width
+    const H = b.height
+    put(g, legoBox(W + 0.5, H, 0.9), face, 0, H / 2 + 0.4, 0)
+    put(g, legoBox(W + 1.3, 0.6, 1.5), frame, 0, H + 0.6, 0)
+    put(g, legoBox(W + 1.3, 0.8, 1.5), frame, 0, 0.4, 0)
+    for (const s of [-1, 1]) put(g, legoBox(0.6, H, 1.2), frame, s * (W / 2 + 0.3), H / 2 + 0.4, 0)
+    settle(root, g)
+    const c = boardCanvas(b)
+    const plane = new Mesh(new PlaneGeometry(W - 0.2, H - 0.4), new MeshBasicMaterial({ map: c.tex }))
+    plane.position.set(x + 0.47, H / 2 + 0.7, b.z)
+    plane.rotation.y = Math.PI / 2
+    root.add(plane)
+    faces.push(c)
+    const t = label(b.title, b.stat === 'breaks' ? 1.2 : 1, { colors: [b.colors], outline: '#20240a' })
+    t.position.set(x, H + 2.2, b.z)
+    root.add(t)
+    solidBox(0.75, (H + 1.2) / 2, W / 2 + 0.7, x, (H + 1.2) / 2 + 0.3, b.z)
+  }
+  return { faces }
+}
+
+function addPlatform(x, z) {
+  solidBox(4.5, 0.15, 13, x, 0.15, z)
+}
+
+// --- Free coins chest ---------------------------------------------------------------------
+function buildChest(root) {
+  const { x, z, yaw, ringR } = SET.chest
+  const purple = legoMat('#7a3cf0', '#6a2ee0', 2)
+  const gold = std('#ffc21a', { metalness: 0.55, roughness: 0.32 })
+  const hoard = neon('#ffd93a', 1.5)
+  const g = new Group()
+  g.position.set(x, 1.5, z)
+  g.rotation.y = yaw
+  g.scale.setScalar(1.25)
+  const body = new Group()
+  put(body, legoBox(2.6, 1.2, 1.7), purple, 0, 0, 0)
+  put(body, box(2.72, 0.26, 1.82), gold, 0, -0.42, 0)
+  put(body, box(2.72, 0.2, 1.82), gold, 0, 0.56, 0)
+  put(body, box(2.3, 0.2, 1.4), hoard, 0, 0.62, 0, false)
+  for (const s of [-1, 1]) put(body, box(0.24, 1.3, 1.82), gold, s * 1.2, 0, 0)
+  put(body, box(0.5, 0.56, 0.16), gold, 0, 0.1, 0.92)
+  g.add(bake(body, true))
+  const lid = new Group()
+  lid.position.set(0, 0.62, -0.84)
+  const lidBody = new Group()
+  put(lidBody, legoBox(2.6, 0.8, 1.7), purple, 0, 0.4, 0.85)
+  put(lidBody, box(2.72, 0.14, 1.82), gold, 0, 0.06, 0.85)
+  for (const s of [-1, 1]) put(lidBody, box(0.24, 0.84, 1.82), gold, s * 1.2, 0.42, 0.85)
+  lid.add(bake(lidBody, true))
+  lid.rotation.x = -1.05
+  g.add(lid)
+  root.add(g)
+  const ring = dashRing(ringR, 0.16, 1, 0.999, new MeshBasicMaterial({ color: '#17101f', side: DoubleSide }))
+  ring.position.set(x, 0.03, z)
+  root.add(ring)
+  const title = rainbowLabel('FREE COINS!', 1.5, ['#3a6bff', '#7a3cff', '#d83cff', '#ff3fb4', '#ffffff', '#ffd23a', '#d8ff3a', '#7dff5a', '#3affd2', '#3ac8ff', '#3a6bff'])
+  title.position.set(x, 5.4, z)
+  const timer = liveLabel('00:00', 1, { color: '#ffffff', outline: '#0b0b12' })
+  timer.position.set(x, 4.4, z)
+  timer.visible = false
+  root.add(title, timer)
+  return { g, lid, timer, opened: 0 }
+}
+
+// --- Greenery -------------------------------------------------------------------------
+function palm(group, x, y, z, rand, mats) {
+  const lean = (rand() - 0.5) * 0.5
+  const leanZ = (rand() - 0.5) * 0.3
+  const segs = 7
+  const h = 1.5
+  let px = 0
+  let py = 0
+  let pz = 0
+  const p = new Group()
+  p.position.set(x, y, z)
+  for (let i = 0; i < segs; i++) {
+    const m = put(p, box(1.15 - i * 0.07, h, 1.15 - i * 0.07), i % 2 ? mats.trunkA : mats.trunkB, px, py + h / 2, pz, false)
+    m.rotation.set(leanZ * (i / segs), 0, -lean * (i / segs))
+    px += lean * 0.26 * (i / segs + 0.4)
+    pz += leanZ * 0.26
+    py += h * 0.97
+  }
+  const crown = new Group()
+  crown.position.set(px, py, pz)
+  const fronds = 7
+  for (let f = 0; f < fronds; f++) {
+    const a = (f / fronds) * Math.PI * 2 + rand() * 0.3
+    const frond = new Group()
+    frond.rotation.y = a
+    let fy = 0.2
+    let fx = 0
+    let tilt = 0.28
+    for (let s = 0; s < 4; s++) {
+      const L = 1.7
+      const seg = put(frond, box(L, 0.28, 1.25 - s * 0.24), s % 2 ? mats.leafA : mats.leafB, fx + Math.cos(tilt) * L * 0.5, fy - Math.sin(tilt) * L * 0.5, 0, false)
+      seg.rotation.z = -tilt
+      fx += Math.cos(tilt) * L
+      fy -= Math.sin(tilt) * L
+      tilt += 0.34
+    }
+    crown.add(frond)
+  }
+  p.add(crown)
+  group.add(p)
+}
+
+function blockTree(group, x, y, z, rand, mats, scale = 1) {
+  const t = new Group()
+  t.position.set(x, y, z)
+  t.scale.setScalar(scale)
+  put(t, box(1.3, 3, 1.3), mats.trunkA, 0, 1.5, 0, false)
+  put(t, box(6.6, 2.2, 6.6), mats.leafA, 0, 3.8, 0, false)
+  put(t, box(5.2, 1.8, 5.2), mats.leafB, 0.2, 5.5, 0, false)
+  put(t, box(3.2, 1.4, 3.2), mats.leafA, -0.2, 6.9, 0.2, false)
+  group.add(t)
+}
+
+// The tiered topiary standing on the lawn: stacked green rounded blocks on a brick stub.
+function topiary(group, x, z, mats) {
+  const t = new Group()
+  t.position.set(x, 0, z)
+  put(t, box(2.4, 0.9, 2.4), mats.stub, 0, 0.45, 0, false)
+  for (const [y, s] of [[2.0, 4.6], [4.5, 4.2], [7.0, 3.6]]) {
+    const m = put(t, box(s, 2.1, s), mats.bush, 0, y, 0, false)
+    m.rotation.y = 0.3
+    put(t, box(0.8, 0.5, 0.8), mats.stub, 0, y - 1.25, 0, false)
+  }
+  group.add(t)
+}
+
+function buildGreenery(root) {
+  const g = new Group()
+  const rand = mulberry32(77)
+  const mats = {
+    trunkA: std('#a8622b'),
+    trunkB: std('#c07a3d'),
+    leafA: std('#1f9f47'),
+    leafB: std('#28b553'),
+    bush: legoMat('#1aa55a', '#22b264', 2),
+    stub: std('#d3612c'),
+  }
+  // Palms and block trees along the terrace tops (every side), never over the lawn.
+  for (let i = 0; i < 70; i++) {
+    const ang = rand() * Math.PI * 2
+    const r = 1.05 + rand() * 0.42
+    const x = Math.cos(ang) * LOBBY.east * r * 1.1
+    const z = 13 + Math.sin(ang) * 86 * r * 1.1
+    const top = terraceTop(x, z)
+    if (top < 9 || (Math.abs(x) > 84 && Math.abs(z - TRACK.z) < 34)) continue
+    if (rand() < 0.68) palm(g, x, top, z, rand, mats)
+    else blockTree(g, x, top, z, rand, mats, 0.9 + rand() * 0.5)
+  }
+  for (const [x, z] of [[-50, -8], [-51, 52], [-72, -50], [-44, -50], [-12, -52], [24, -49], [58, -51], [-92, 66], [-64, 80], [-30, 78], [6, 80], [40, 78], [74, 78], [100, 40]]) topiary(g, x, z, mats)
+
+  // Pale rocks and teal block bushes scattered about.
+  const rock = std('#b9d3e6', { roughness: 0.75 })
+  for (const [x, z, s] of [[-8, -46, 1.4], [38, -47, 1], [66, -46, 1.6], [-62, -46, 1.1], [-44, 78, 1.2], [18, 74, 1.3], [-22, 72, 0.9]]) {
+    const m = put(g, new DodecahedronGeometry(s * 1.1, 0), rock, x, s * 0.6, z, false)
+    m.rotation.set(rand(), rand(), rand())
+    m.scale.y = 0.7
+  }
+  const teal = legoMat('#37cfa4', '#2fc29a', 2)
+  for (const [x, z, n] of [[16, 37, 4], [-9, 37, 3], [22, 33, 3], [54, 40, 3]]) {
+    for (let i = 0; i < n; i++) {
+      put(g, legoBox(2.4, 1.2, 2.4), teal, x + (i % 2) * 1.9 - 0.9, 0.6 + (i > 1 ? 1.2 : 0), z + (i % 3) * 0.8, false)
+    }
+  }
+  const tuft = std('#128a47')
+  for (let i = 0; i < 26; i++) {
+    const x = (rand() - 0.5) * 200
+    const z = -58 + rand() * 18
+    for (let j = 0; j < 3; j++) put(g, box(0.28, 0.6 + rand() * 0.5, 0.28), tuft, x + (j - 1) * 0.42, 0.3, z + (rand() - 0.5) * 0.4, false)
+  }
+  // Flowers and gold bars on the terraces.
+  const flower = std('#ffd93b')
+  const gold = std('#f7c531', { metalness: 0.7, roughness: 0.35 })
+  const pinkFlower = std('#ff6fb1')
+  for (let i = 0; i < 80; i++) {
+    const a = rand() * Math.PI * 2
+    const x = Math.cos(a) * 150 * (0.9 + rand() * 0.5)
+    const z = 13 + Math.sin(a) * 100 * (0.92 + rand() * 0.5)
+    const top = terraceTop(x, z)
+    if (top < 9) continue
+    if (rand() < 0.14) put(g, box(2.2, 0.8, 1.2), gold, x, top + 0.4, z, false)
+    else put(g, box(0.7, 0.5, 0.7), rand() < 0.75 ? flower : pinkFlower, x, top + 0.26, z, false)
+  }
+  root.add(bake(g, false))
+}
+
+// The floating signs and the flat HP readout on the lawn.
+function buildHpSign(root) {
+  const c = document.createElement('canvas')
+  c.width = 1024
+  c.height = 300
+  const tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = 8
+  const plane = new Mesh(new PlaneGeometry(13, 3.8), new MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 }))
+  plane.rotation.x = -Math.PI / 2
+  plane.rotation.z = 0.02
+  plane.position.set(SET.hpSign.x, 0.07, SET.hpSign.z)
+  root.add(plane)
+  const ctx = c.getContext('2d')
+  let last = ''
+  const draw = (hp, count) => {
+    const key = `${hp}|${count}`
+    if (key === last) return
+    last = key
+    ctx.clearRect(0, 0, 1024, 300)
+    ctx.textAlign = 'center'
+    ctx.lineJoin = 'round'
+    // Bicep, then the number.
+    ctx.save()
+    ctx.translate(150, 112)
+    ctx.scale(1.15, 0.72)
+    ctx.fillStyle = '#ffc61a'
+    ctx.strokeStyle = '#2b1a00'
+    ctx.lineWidth = 12
+    ctx.beginPath()
+    ctx.moveTo(-74, 24)
+    ctx.quadraticCurveTo(-68, -40, -20, -44)
+    ctx.quadraticCurveTo(14, -48, 8, -16)
+    ctx.quadraticCurveTo(54, -36, 74, 6)
+    ctx.quadraticCurveTo(66, 48, 0, 44)
+    ctx.quadraticCurveTo(-40, 44, -74, 24)
+    ctx.closePath()
+    ctx.stroke()
+    ctx.fill()
+    ctx.restore()
+    ctx.font = 'italic 700 118px Fredoka, "Arial Black", sans-serif'
+    ctx.lineWidth = 16
+    ctx.strokeStyle = '#101018'
+    ctx.fillStyle = '#ffffff'
+    ctx.strokeText(hp.toLocaleString('en-US'), 590, 104)
+    ctx.fillText(hp.toLocaleString('en-US'), 590, 104)
+    ctx.font = 'italic 700 74px Fredoka, "Arial Black", sans-serif'
+    ctx.lineWidth = 12
+    ctx.fillStyle = '#ffe04a'
+    const t = `${count} VEHICLES`
+    ctx.strokeText(t, 590, 222)
+    ctx.fillText(t, 590, 222)
+    tex.needsUpdate = true
+  }
+  draw(0, 0)
+  return draw
+}
+
+// A square PNG-free sprite from one of the HUD's inline SVG icons.
+function iconSprite(svg, size) {
+  const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" '))}`
+  const map = new TextureLoader().load(src)
+  map.colorSpace = SRGBColorSpace
+  const s = new Sprite(new SpriteMaterial({ map, transparent: true, depthWrite: false, fog: false }))
+  s.scale.set(size, size, 1)
+  return s
+}
+
+const mm = (s) => {
+  const t = Math.ceil(s)
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+}
+const rnd = (a, b) => a + Math.random() * (b - a)
+const shardM = new Matrix4()
+const eu = new Euler()
+const sc = new Vector3()
+
+let adBusy = false
+export function createLobby(scene, fx, sound) {
+  const staticRoot = new Group()
+  scene.add(staticRoot)
+  const stall = buildStall(staticRoot)
+  const fuse = buildFuse(staticRoot)
+  const admin = buildAdmin(staticRoot)
+  const mailbox = buildMailbox(staticRoot)
+  const portal = buildPortal(staticRoot)
+  const boards = buildBoards(staticRoot)
+  const chest = buildChest(staticRoot)
+  buildGreenery(staticRoot)
+  onChange(() => boards.faces.forEach((f) => f.draw()))
+  const drawHp = buildHpSign(staticRoot)
+
+  // The Upgrade pad: a dashed pink ring that slowly turns.
+  const r = SET.stall.ring
+  const pink = dashRing(r.r, 0.3, 3, 0.52, new MeshBasicMaterial({ color: '#f01a75', side: DoubleSide }))
+  pink.position.set(r.x, 0.03, r.z)
+  staticRoot.add(pink)
+
+  // Orange stepping tiles scattered by the yard's far corner.
+  const tiles = new Group()
+  const tileMat = legoMat('#e8843d', '#dd7932', 1.5)
+  const rand = mulberry32(31)
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8
+    const tx = -44 + t * 5 + (rand() - 0.5) * 3
+    const tz = 31 + t * 6 + (rand() - 0.5) * 2.4
+    const s = 0.7 + rand() * 0.8
+    const m = put(tiles, legoBox(s * 1.4, 0.05, s), tileMat, tx, 0.025, tz, false)
+    m.rotation.y = rand() * 0.6
+  }
+  staticRoot.add(bake(tiles, false))
+
+  // The upgrade sign above the stall: train badge, title, subtitle.
+  const s = SET.stall
+  const up = label('UPGRADE', 1.9, { colors: [['#ff4f9a', '#e0115f']], outline: '#3a0a1f' })
+  up.position.set(s.x, 8.6, s.z)
+  const sub = label('BECOME THE BEST TRAIN STOPPER', 0.72, { color: '#ffffff', outline: '#0b0b12' })
+  sub.position.set(s.x, 7.5, s.z)
+  const badge = iconSprite(ICONS.train, 2.4)
+  badge.position.set(s.x, 10.7, s.z)
+  staticRoot.add(up, sub, badge)
+
+  const collect = new Group()
+  const c = SET.collectSign
+  collect.position.set(c.x, c.y, c.z)
+  const cTitle = label('COLLECT CARS', 2.6, { colors: [['#ff4242', '#c20d14']], outline: '#ffffff', outlineWidth: 12 })
+  collect.add(cTitle)
+  scene.add(collect)
+  const d = SET.diamondSign
+  const dia = label('DIAMOND CARS', 2, { colors: [['#7fdcff', '#2a8df0']], outline: '#072a55' })
+  dia.position.set(d.x, d.y, d.z)
+  staticRoot.add(dia)
+
+  // CURRENT TRAIN board floating over the rail.
+  const b = SET.trainSign
+  const cur = label('CURRENT TRAIN', 3.8, { color: '#ffffff', outline: '#0b0b12' })
+  cur.position.set(b.x, b.y, b.z)
+  const rarity = liveLabel('COMMON', 9, { colors: [['#ffffff', '#c7d3e0']], outline: '#0b0b12', outlineWidth: 18 })
+  rarity.position.set(b.x, b.y - 6.4, b.z)
+  staticRoot.add(cur, rarity)
+
+  // West effects: the void pouring into the portal, steam off the machine, glitter off the chest.
+  const nearPlayer = (x, z, reach) => Math.hypot(player.position.x - x, player.position.z - z) < reach
+  const pr = { x: SET.portal.x, y: 4, z: SET.portal.z, sin: Math.sin(SET.portal.yaw), cos: Math.cos(SET.portal.yaw) }
+  fx.addEmitter({
+    rate: 34,
+    tick(_p, n) {
+      if (!nearPlayer(pr.x, pr.z, 90)) return
+      for (let i = 0; i < n; i++) {
+        const a = rnd(0, 6.28)
+        const d = rnd(2.8, 5)
+        // In the disc's plane: right, up.
+        const u = Math.cos(a) * d
+        const w = Math.sin(a) * d
+        const spin = rnd(3, 6)
+        const tu = -Math.sin(a) * spin - Math.cos(a) * 3.4
+        const tw = Math.cos(a) * spin - Math.sin(a) * 3.4
+        fx.light.emit({ x: pr.x + u * pr.cos, y: pr.y + w, z: pr.z - u * pr.sin, vx: tu * pr.cos + pr.sin * 0.8, vy: tw, vz: -tu * pr.sin + pr.cos * 0.8, life: rnd(0.5, 1), size: rnd(0.08, 0.17), size2: 0.02, stretch: 0.04, ramp: i % 3 ? 'violet' : 'magic', round: true })
+      }
+    },
+  })
+  const fz = SET.fuse
+  const stack = { x: fz.x - Math.sin(fz.yaw) * 1.8, z: fz.z - Math.cos(fz.yaw) * 1.8 }
+  fx.addEmitter({
+    rate: 5,
+    tick(p, n) {
+      if (!nearPlayer(fz.x, fz.z, 80)) return
+      for (let i = 0; i < n; i++) {
+        const side = i % 2 ? -1.5 : 1.5
+        p.set(stack.x + Math.cos(fz.yaw) * side, 9, stack.z - Math.sin(fz.yaw) * side)
+        fx.puff(p, 0.5, 'steam', 2.4, 1.6, 0.5)
+      }
+    },
+  })
+  fx.addEmitter({
+    rate: 12,
+    tick(p, n) {
+      if (!nearPlayer(fz.ring.x, fz.ring.z, 60)) return
+      const front = { x: fz.x + Math.sin(fz.yaw) * 3, z: fz.z + Math.cos(fz.yaw) * 3 }
+      for (let i = 0; i < n; i++) fx.sparkle(p.set(front.x + rnd(-2.6, 2.6) * Math.cos(fz.yaw), 1.8, front.z - rnd(-2.6, 2.6) * Math.sin(fz.yaw)), 'cyan', 0.3)
+    },
+  })
+  const ch = SET.chest
+  fx.addEmitter({
+    rate: 9,
+    tick(p, n) {
+      if (chestLeft() > 0 || !nearPlayer(ch.x, ch.z, 70)) return
+      for (let i = 0; i < n; i++) fx.sparkle(p.set(ch.x, chest.g.position.y + 0.8, ch.z), 'gold', 1.5)
+    },
+  })
+
+  let hud = null
+  let humCd = 2
   return {
-    spots,
-    setLaneVisible: (on) => (lane.visible = on),
+    updateHp: drawHp,
+    mailbox,
+    portal,
+    setBoards(data) {
+      serverBoards = data
+      boards.faces.forEach((f) => f.draw())
+    },
+    setFuseCount(n) {
+      fuse.count.setText(`${n}/${FUSE.slots}`)
+    },
+    setHud(h) {
+      hud = h
+    },
+    // What E does at the chest.
+    chestWant() {
+      if (Math.hypot(player.position.x - ch.x, player.position.z - ch.z) > ch.reach) return null
+      const base = { bay: chest, x: ch.x, y: 3.6, z: ch.z }
+      const left = chestLeft()
+      if (left > 0) {
+        const ad = net.connected && bloxity.adsAvailable()
+        return {
+          ...base,
+          kind: 'chest-wait',
+          text: ad ? 'Watch Ad' : 'Empty',
+          instant: true,
+          async act() {
+            if (!ad || adBusy) {
+              sound.deny()
+              hud.toast(`The chest refills in ${mm(left)}`)
+              return
+            }
+            adBusy = true
+            const ok = await requestAdReward(ADS.chest.placement)
+            adBusy = false
+            if (ok) {
+              refillChest()
+              hud.showBanner('CHEST REFILLED!', 'CLAIM YOUR FREE COINS', 2600)
+            } else hud.toast('No reward: the ad did not finish')
+          },
+        }
+      }
+      return {
+        ...base,
+        kind: 'chest',
+        text: 'Claim',
+        act() {
+          const coins = claimChest()
+          if (!coins) return
+          chest.opened = 1
+          sound.chestOpen(ch.x, ch.z)
+          hud.coinBurst(18)
+          hud.showBanner('FREE COINS!', `+${compact(coins)} COINS`, 2600)
+          fx.sparks(ch.x, 2.4, ch.z, 40, 9, 0, 0.8, 0, 'gold')
+          fx.shockwave(ch.x, 0.2, ch.z, 7, 0.5, '#ffe36b')
+        },
+      }
+    },
+    collectSign: collect,
+    setUpdateTimer: (t) => admin.timer.setText(t),
+    setRarity(spec) {
+      rarity.setText(spec.name, { colors: [spec.text], outline: '#0b0b12', outlineWidth: 18 })
+    },
     update(dt, elapsed) {
-      for (const fn of animated) fn(elapsed)
+      portal.uniforms.time.value = elapsed
+      for (let i = 0; i < portal.items.length; i++) {
+        const it = portal.items[i]
+        it.a += it.v * dt
+        const spin = elapsed * 0.7 + i
+        shardM.makeRotationFromEuler(eu.set(spin, spin * 0.7, 0)).scale(sc.setScalar(it.s))
+        shardM.setPosition(Math.cos(it.a) * it.d, Math.sin(it.a) * it.d, it.z)
+        portal.shards.setMatrixAt(i, shardM)
+      }
+      portal.shards.instanceMatrix.needsUpdate = true
+      pink.rotation.z = elapsed * 0.35
+      fuse.ring.rotation.z = elapsed * 0.3
+      portal.ring.rotation.z = -elapsed * 0.3
+      // The machine's lights breathe, with the odd flicker of a loose contact.
+      const pulse = 0.8 + Math.sin(elapsed * 2.2) * 0.2 - (Math.sin(elapsed * 31) > 0.97 ? 0.4 : 0)
+      fuse.cyan.color.copy(fuse.cyan.userData.base).multiplyScalar(pulse * 1.2)
+      // The chest floats, and its lid falls shut for as long as it is empty.
+      const empty = chestLeft() > 0
+      chest.g.position.y = 1.5 + Math.sin(elapsed * 1.6) * 0.16
+      chest.g.rotation.z = 0.12 + Math.sin(elapsed * 1.1) * 0.03
+      chest.opened = Math.max(0, chest.opened - dt * 1.6)
+      const shut = empty ? -0.08 - chest.opened * 1.4 : -1.05 + Math.sin(elapsed * 2) * 0.05
+      chest.lid.rotation.x += (shut - chest.lid.rotation.x) * (1 - Math.exp(-6 * dt))
+      chest.timer.visible = empty
+      if (empty) chest.timer.setText(mm(chestLeft()))
+      humCd -= dt
+      if (humCd <= 0) {
+        humCd = 1.7
+        sound.portalHum(SET.portal.x, SET.portal.z)
+        sound.machineHum(SET.fuse.x, SET.fuse.z)
+      }
+      stall.npc.rotation.z = Math.sin(elapsed * 1.6) * 0.03
+      collect.position.y = c.y + Math.sin(elapsed * 1.2) * 0.25
     },
   }
 }

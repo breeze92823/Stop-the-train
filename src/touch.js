@@ -6,7 +6,7 @@
 //   buttons     - jump, sprint (toggle), camera mode, plus day-night/respawn
 import './touch.css'
 import { COARSE_POINTER, TOUCH } from './config.js'
-import { inputState, requestLock, setTouchMove, setTouchSprint } from './input.js'
+import { inputState, setTouchMove, setTouchSprint } from './input.js'
 
 const ICONS = {
   day: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>',
@@ -69,7 +69,7 @@ function installJoystick(zone) {
   }
 
   zone.addEventListener('pointerdown', (e) => {
-    if (!isFinger(e)) return requestLock()
+    if (!isFinger(e)) return
     if (id !== null) return
     e.preventDefault()
     id = e.pointerId
@@ -115,7 +115,7 @@ function installLook(zone) {
   }
 
   zone.addEventListener('pointerdown', (e) => {
-    if (!isFinger(e)) return requestLock()
+    if (!isFinger(e)) return
     e.preventDefault()
     capture(zone, e.pointerId)
     fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })

@@ -1,238 +1,413 @@
 import {
-  ExtrudeGeometry,
+  CanvasTexture,
   Group,
   IcosahedronGeometry,
+  InstancedMesh,
+  BoxGeometry,
+  Matrix4,
   Mesh,
+  MeshBasicMaterial,
   MeshLambertMaterial,
-  MeshPhysicalMaterial,
   MeshStandardMaterial,
+  NearestFilter,
   PlaneGeometry,
-  Shape,
-  ShapeGeometry,
-  SphereGeometry,
   Vector2,
 } from 'three'
-import { BEACH, ISLET, WATER } from './config.js'
+import { GYM, LOBBY, SET, TRACK, YARD } from './config.js'
 import { RAPIER, addFixed } from './physics.js'
-import { mulberry32, paintCrackedSand, paintWaterNormal, toTexture } from './textures.js'
-import { buildCliff, buildPalm, cliffCollider } from './propkit.js'
+import { bake } from './bake.js'
+import { buildVoxels } from './voxels.js'
+import { mulberry32, paintLego, paintTerrace, toTexture } from './textures.js'
 
-// The lobby ground: a pale cracked-sand beach slab in a bright cartoon sea,
-// with green hills on the far left horizon, a rocky islet with palms to the
-// east, and puffy clouds in the sky. The sea and clouds are shared by every
-// world (createWorld); the land is built per world (buildBeachLand here, the
-// City's in city.js, both through buildSlab; environment.js shows one).
-// Physically the land is one convex-hull collider plus an invisible fence on
-// every edge (landColliders, the same in every world).
-//
-// Texture techniques used here:
-//  - sand: tileable Voronoi cells + cracks -> colour + derived normal map,
-//    world-space UVs (ExtrudeGeometry caps use shape coordinates = metres)
-//  - sea: one ripple normal map used twice (normalMap + clearcoatNormalMap) at
-//    different scales, scrolled in different directions each frame, over a
-//    lighter shallow-water band hugging the shore
+// The ground of the lobby: the studded lawn, the checkered terraces walling it in,
+// the two purple tunnel mountains the railway runs through, the rails, the spawn
+// plaza and the yard markings. Everything here is static; the set pieces standing
+// on it are in lobby.js.
 
-// Beach outline in world (x, z), counter-clockwise seen from above. Convex.
-export function beachOutline() {
-  const { front, back, halfWidth: W, wingZ, gateEdge } = BEACH
-  return [
-    [-W, back],
-    [W, back],
-    [W, wingZ],
-    [gateEdge, front],
-    [-gateEdge, front],
-    [-W, wingZ],
-  ]
-}
-
-// Shape space is (x, -z): rotating the extrusion -90 deg about X maps shape y to world -z and depth to +y.
-function outlineShape(points, scale = 1, cz = 0) {
-  const s = new Shape()
-  points.forEach(([x, z], i) => {
-    const sx = x * scale
-    const sz = cz + (z - cz) * scale
-    if (i === 0) s.moveTo(sx, -sz)
-    else s.lineTo(sx, -sz)
+const legoTex = { top: null, side: null }
+function legoMaterials() {
+  const white = paintLego({ a: '#ffffff', b: '#f1f1f1', size: 256, perCell: 4, ring: 0.14, lit: 0.2 })
+  const terrace = paintTerrace()
+  const metres = 1 / 6
+  legoTex.top = new MeshLambertMaterial({
+    map: toTexture(white.color, { repeat: metres, srgb: true }),
+    vertexColors: true,
   })
-  s.closePath()
-  return s
+  const sideMap = toTexture(terrace.color, { repeat: 1 / 6, srgb: true })
+  // A touch of self-light: walls facing away from the sun stay as warm as the reference's.
+  legoTex.side = new MeshLambertMaterial({ map: sideMap, emissive: '#ffffff', emissiveMap: sideMap, emissiveIntensity: 0.3 })
+  // Bands of the terrace use the plain top material: their tint comes from vertex colours.
+  return legoTex
 }
 
-export function makeHill(x, z, rx, ry, rz, color, seed) {
-  const geo = new SphereGeometry(1, 40, 16, 0, Math.PI * 2, 0, Math.PI / 2)
-  const rand = mulberry32(seed)
-  const bumps = Array.from({ length: 4 }, () => ({ a: rand() * Math.PI * 2, f: 2 + Math.floor(rand() * 3), k: 0.04 + rand() * 0.05 }))
-  const pos = geo.attributes.position
-  for (let i = 0; i < pos.count; i++) {
-    const px = pos.getX(i)
-    const py = pos.getY(i)
-    const pz = pos.getZ(i)
-    const ang = Math.atan2(pz, px)
-    let k = 1
-    for (const b of bumps) k += Math.sin(ang * b.f + b.a) * b.k * py
-    pos.setXYZ(i, px * k, py, pz * k)
+// --- Terrace shape -----------------------------------------------------------------
+// Layers of blocks at a world point; blocky chunks climbing away from the lawn.
+const chunkNoise = (x, z, seed) => {
+  const a = Math.sin(Math.floor(x) * 127.1 + Math.floor(z) * 311.7 + seed) * 43758.5453
+  return a - Math.floor(a)
+}
+export function terraceLayers(x, z) {
+  const { west, east, north, south } = LOBBY
+  const d = Math.max(west - x, x - east, north - z, z - south)
+  if (d <= 0) return 0
+  const n = chunkNoise(x / 24, z / 24, 1)
+  const m = chunkNoise(x / 12, z / 12, 7)
+  if (d < 18) return 5 + (n > 0.62 ? 1 : 0) + (m > 0.82 ? -1 : 0)
+  if (d < 42) return 7 + (n > 0.5 ? 1 : 0)
+  if (d < 70) return 9 + (m > 0.5 ? 1 : 0)
+  return 11
+}
+export const terraceTop = (x, z) => terraceLayers(x, z) * LOBBY.terraceStep
+
+function tunnelCorridor(x, z, y) {
+  return Math.abs(x) > TRACK.mouth - 1 && Math.abs(z - TRACK.z) < 4.8 && y < 8.6
+}
+
+function buildTerraces(root, mats) {
+  const { terraceCell: c, terraceStep: h } = LOBBY
+  const ox = LOBBY.west - 170
+  const oz = LOBBY.north - 170
+  const nx = Math.ceil((LOBBY.east - LOBBY.west + 340) / c)
+  const nz = Math.ceil((LOBBY.south - LOBBY.north + 340) / c)
+  const center = (i, k) => [ox + (i + 0.5) * c, oz + (k + 0.5) * c]
+  const layers = new Int8Array(nx * nz)
+  for (let k = 0; k < nz; k++) {
+    for (let i = 0; i < nx; i++) {
+      const [x, z] = center(i, k)
+      layers[k * nx + i] = terraceLayers(x, z)
+    }
   }
-  geo.computeVertexNormals()
-  const hill = new Mesh(geo, new MeshStandardMaterial({ color, roughness: 1 }))
-  hill.scale.set(rx, ry, rz)
-  hill.position.set(x, WATER.level - 1, z)
-  // A sand rim where it meets the water.
-  const rim = new Mesh(new SphereGeometry(1, 40, 6, 0, Math.PI * 2, 0, Math.PI / 2), new MeshStandardMaterial({ color: '#f1dca6', roughness: 1 }))
-  rim.scale.set(rx * 1.08, 3, rz * 1.12)
-  rim.position.set(x, WATER.level - 1.6, z)
-  return [hill, rim]
+  const [tops, sides] = buildVoxels({
+    nx,
+    ny: 12,
+    nz,
+    cell: [c, h, c],
+    origin: [ox, 0, oz],
+    materials: 2,
+    cap: 1.1,
+    solid: (i, j, k) => {
+      if (j >= layers[k * nx + i]) return false
+      const [x, z] = center(i, k)
+      return !tunnelCorridor(x, z, j * h)
+    },
+    paint: (i, j, k, face, band) => {
+      if (face === 'side' && band === 'body') return { mat: 1, color: '#ffffff' }
+      const n = chunkNoise(i * 0.5, k * 0.5, 3)
+      return { mat: 0, color: n > 0.5 ? '#35c95f' : '#2fbd56' }
+    },
+  })
+  const t = new Mesh(tops, mats.top)
+  const s = new Mesh(sides, mats.side)
+  t.receiveShadow = s.receiveShadow = true
+  root.add(t, s)
+}
+
+// --- Tunnel mountains ---------------------------------------------------------------
+function buildMountain(root, mats, sign) {
+  const cell = 1.5
+  const depth = 46
+  const halfZ = 26
+  const height = 22
+  const nx = Math.ceil(depth / cell)
+  const ny = Math.ceil(height / cell)
+  const nz = Math.ceil((halfZ * 2) / cell)
+  const rand = mulberry32(sign > 0 ? 41 : 97)
+  const jag = new Float32Array(nx * nz)
+  for (let i = 0; i < jag.length; i++) jag[i] = rand()
+  const ox = sign > 0 ? TRACK.mouth : -TRACK.mouth - nx * cell
+  const oz = TRACK.z - halfZ
+  const heightAt = (i, k) => {
+    const depthIn = sign > 0 ? i * cell : (nx - 1 - i) * cell
+    const off = Math.abs((k + 0.5) * cell - halfZ)
+    const front = 10 + depthIn * 2.1 // leans back from the mouth
+    const shoulder = (halfZ - off) * 1.25 + 2
+    const peak = 19 - off * 0.08
+    return Math.min(front, shoulder, peak) + (jag[k * nx + i] - 0.5) * 2.4
+  }
+  const carved = (i, j, k) => {
+    const off = Math.abs((k + 0.5) * cell - halfZ)
+    const y = j * cell
+    const seed = jag[(k * nx + j * 7) % jag.length]
+    return off < 4.3 + seed * 0.6 && y < 7.6 + seed * 1.2 - off * 0.05
+  }
+  const solid = (i, j, k) => (j + 0.5) * cell < heightAt(i, k) && !carved(i, j, k)
+  const [geo] = buildVoxels({
+    nx,
+    ny,
+    nz,
+    cell: [cell, cell, cell],
+    origin: [ox, 0, oz],
+    solid,
+    paint: (i, j, k, face, _b, dx, dz) => {
+      const ni = i + (dx ?? 0)
+      const nk = k + (dz ?? 0)
+      if (ni >= 0 && nk >= 0 && ni < nx && nk < nz && carved(ni, j, nk)) return { mat: 0, color: '#04040a' }
+      if (face === 'bottom') return { mat: 0, color: '#04040a' }
+      const shade = jag[k * nx + i]
+      if (face === 'top') return { mat: 0, color: shade > 0.5 ? '#8f88ee' : '#857de6' }
+      return { mat: 0, color: shade > 0.5 ? '#6a62d6' : '#5f57c9' }
+    },
+  })
+  const m = new Mesh(geo, mats.top)
+  m.castShadow = m.receiveShadow = true
+  root.add(m)
+  const floor = new Mesh(new PlaneGeometry(depth, 11), new MeshBasicMaterial({ color: '#06060c' }))
+  floor.rotation.x = -Math.PI / 2
+  floor.position.set(sign * (TRACK.mouth + depth / 2 + 0.6), 0.02, TRACK.z)
+  root.add(floor)
+  // The far end of the bore: the train slips out of the dark through this.
+  const plate = new Mesh(new PlaneGeometry(20, 16), new MeshBasicMaterial({ color: '#000000', fog: false }))
+  plate.position.set(sign * (TRACK.mouth + depth - 4), 7, TRACK.z)
+  plate.rotation.y = -sign * Math.PI * 0.5
+  root.add(plate)
+}
+
+// --- Railway ------------------------------------------------------------------------
+function buildTrack(root) {
+  const count = Math.ceil((TRACK.end * 2) / TRACK.tieEvery)
+  const tieGeo = new BoxGeometry(0.62, 0.16, TRACK.tieLength)
+  const tieMat = new MeshStandardMaterial({ roughness: 0.8, color: '#ffffff' })
+  const ties = new InstancedMesh(tieGeo, tieMat, count)
+  const rand = mulberry32(5)
+  const m = new Matrix4()
+  const tone = new MeshBasicMaterial().color
+  for (let i = 0; i < count; i++) {
+    m.makeTranslation(-TRACK.end + i * TRACK.tieEvery, 0.08, TRACK.z + (rand() - 0.5) * 0.08)
+    ties.setMatrixAt(i, m)
+    ties.setColorAt(i, tone.set(i % 3 === 0 ? '#d7824a' : i % 3 === 1 ? '#c8703b' : '#bc6535'))
+  }
+  ties.castShadow = false
+  ties.receiveShadow = true
+  root.add(ties)
+
+  // A rail is an I-beam: foot, web and a polished head.
+  const steel = new MeshStandardMaterial({ color: '#a7a3bd', metalness: 0.75, roughness: 0.34 })
+  const shiny = new MeshStandardMaterial({ color: '#d9d7e6', metalness: 0.9, roughness: 0.2 })
+  const L = TRACK.end * 2
+  for (const side of [-1, 1]) {
+    const z = TRACK.z + (side * TRACK.gauge) / 2
+    const foot = new Mesh(new BoxGeometry(L, 0.04, 0.3), steel)
+    foot.position.set(0, 0.18, z)
+    const web = new Mesh(new BoxGeometry(L, 0.08, 0.1), steel)
+    web.position.set(0, 0.23, z)
+    const head = new Mesh(new BoxGeometry(L, 0.07, 0.2), shiny)
+    head.position.set(0, 0.268, z)
+    foot.castShadow = head.castShadow = true
+    foot.receiveShadow = head.receiveShadow = true
+    root.add(foot, web, head)
+  }
+}
+
+// --- Painted lawn markings ------------------------------------------------------------
+function decalTexture(draw, w, h) {
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  draw(c.getContext('2d'), w, h)
+  const t = new CanvasTexture(c)
+  t.magFilter = NearestFilter
+  t.generateMipmaps = false
+  t.minFilter = NearestFilter
+  return t
+}
+
+function flat(root, w, d, x, z, mat, y = 0.012, yaw = 0) {
+  const m = new Mesh(new PlaneGeometry(w, d), mat)
+  m.rotation.set(-Math.PI / 2, 0, yaw)
+  m.position.set(x, y, z)
+  m.receiveShadow = true
+  root.add(m)
+  return m
+}
+
+function buildChevrons(root) {
+  const { x, zFrom, zTo, count } = SET.chevrons
+  const tex = decalTexture((ctx, w, h) => {
+    // Pixel-stepped arrow pointing up the canvas (north).
+    ctx.fillStyle = '#04572c'
+    for (let i = 0; i < 7; i++) {
+      ctx.fillRect(14 - i * 2, 4 + i * 2, 4, 6)
+      ctx.fillRect(14 + i * 2, 4 + i * 2, 4, 6)
+    }
+  }, 32, 32)
+  const mat = new MeshLambertMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })
+  for (let i = 0; i < count; i++) {
+    const t = count > 1 ? i / (count - 1) : 0
+    flat(root, 6, 6, x, zFrom + (zTo - zFrom) * t, mat)
+  }
+}
+
+function dashedLine(root, x0, z0, x1, z1, mat, dash = 1.5, gap = 1.1, width = 0.26) {
+  const len = Math.hypot(x1 - x0, z1 - z0)
+  const n = Math.floor(len / (dash + gap))
+  const yaw = Math.atan2(-(x1 - x0), -(z1 - z0))
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n
+    flat(root, width, dash, x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, mat, 0.02, yaw)
+  }
+}
+export function dashedRect(root, x0, z0, x1, z1, mat, opts = {}) {
+  dashedLine(root, x0, z0, x1, z0, mat, opts.dash, opts.gap, opts.width)
+  dashedLine(root, x1, z0, x1, z1, mat, opts.dash, opts.gap, opts.width)
+  dashedLine(root, x1, z1, x0, z1, mat, opts.dash, opts.gap, opts.width)
+  dashedLine(root, x0, z1, x0, z0, mat, opts.dash, opts.gap, opts.width)
+}
+
+function buildYardMarkings(root) {
+  const white = new MeshBasicMaterial({ color: '#ffffff', polygonOffset: true, polygonOffsetFactor: -2 })
+  const black = new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 })
+  const b = YARD.border
+  dashedRect(root, b.x0, b.z0, b.x1, b.z1, white, { dash: 1.8, gap: 1.3, width: 0.3 })
+  const { width: W, length: L, line } = YARD.bay
+  for (const row of YARD.rows) {
+    row.bays.forEach((_, i) => {
+      const x = row.x - i * row.step
+      flat(root, W + line, line, x, row.z - L / 2, black, 0.02)
+      flat(root, W + line, line, x, row.z + L / 2, black, 0.02)
+      flat(root, line, L, x - W / 2, row.z, black, 0.02)
+      flat(root, line, L, x + W / 2, row.z, black, 0.02)
+    })
+  }
+}
+
+function buildGymMarkings(root) {
+  const white = new MeshBasicMaterial({ color: '#ffffff', polygonOffset: true, polygonOffsetFactor: -2 })
+  const black = new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 })
+  const b = GYM.border
+  dashedRect(root, b.x0, b.z0, b.x1, b.z1, white, { dash: 1.8, gap: 1.3, width: 0.3 })
+  const { width: W, length: L, line } = GYM.bay
+  for (const cfg of GYM.benches) {
+    const x = GYM.firstX + cfg.slot * GYM.step
+    const z = GYM.rows[cfg.row].z
+    flat(root, W + line, line, x, z - L / 2, black, 0.02)
+    flat(root, W + line, line, x, z + L / 2, black, 0.02)
+    flat(root, line, L, x - W / 2, z, black, 0.02)
+    flat(root, line, L, x + W / 2, z, black, 0.02)
+  }
+}
+
+function buildPlaza(root) {
+  const { x0, x1, z0, z1, height, pad } = SET.plaza
+  const lego = paintLego({ a: '#7c72d6', b: '#958bea', size: 512, perCell: 4, strength: 2.6, ring: 0.2, lit: 0.22 })
+  const w = x1 - x0
+  const d = z1 - z0
+  const cx = (x0 + x1) / 2
+  const cz = (z0 + z1) / 2
+  const tile = 5.6 // a 2x2 checker of 2.8 m cells
+  const box = (bw, bh, bd, y, mats) => {
+    const m = new Mesh(new BoxGeometry(bw, bh, bd), mats)
+    m.position.set(cx, y, cz)
+    m.receiveShadow = true
+    root.add(m)
+    return m
+  }
+  const topTex = toTexture(lego.color, { srgb: true, anisotropy: 16 })
+  const nrm = toTexture(lego.normal)
+  topTex.repeat.set(w / tile, d / tile)
+  nrm.repeat.set(w / tile, d / tile)
+  const top = new MeshLambertMaterial({ map: topTex, normalMap: nrm })
+  const edge = new MeshLambertMaterial({ color: '#4c42b0' })
+  const lilac = new MeshLambertMaterial({ color: '#c9b6f5' })
+  box(w + 1.3, 0.08, d + 1.3, 0.04, lilac) // the pale outer lip
+  box(w + 0.5, 0.2, d + 0.5, 0.1, edge)
+  box(w, height, d, height / 2, [edge, edge, top, edge, edge, edge])
+
+  // The spawn pad: a dark inlay inside a raised lilac frame.
+  const fh = 0.16
+  const rim = new MeshLambertMaterial({ color: '#5a4fbf' })
+  const pale = new MeshLambertMaterial({ color: '#bfaef2' })
+  const padMat = new MeshLambertMaterial({ color: '#3a3478' })
+  const pz = (z0 + z1) / 2
+  const frame = (size, t, mat, y, h) => {
+    for (const [fx, fz, sx, sz] of [[0, -size / 2, size + t, t], [0, size / 2, size + t, t], [-size / 2, 0, t, size], [size / 2, 0, t, size]]) {
+      const m = new Mesh(new BoxGeometry(sx, h, sz), mat)
+      m.position.set(cx + fx, y, pz + fz)
+      m.receiveShadow = true
+      root.add(m)
+    }
+  }
+  frame(pad + 1.1, 0.5, rim, height + fh / 2, fh)
+  frame(pad, 0.14, pale, height + 0.02, 0.05)
+  const inlay = new Mesh(new BoxGeometry(pad, 0.03, pad), padMat)
+  inlay.position.set(cx, height + 0.01, pz)
+  inlay.receiveShadow = true
+  root.add(inlay)
+  addFixed(RAPIER.ColliderDesc.cuboid(w / 2, height / 2, d / 2), { x: cx, y: height / 2, z: cz })
+}
+
+// The whole static lobby.
+export function buildGround(root) {
+  const lawn = paintLego({ a: '#0fbb60', b: '#19c86d', size: 512, perCell: 4, strength: 2.2, ring: 0.22, lit: 0.22 })
+  const size = LOBBY.groundSize
+  const rep = size / LOBBY.tile
+  const colorMap = toTexture(lawn.color, { repeat: rep, srgb: true, anisotropy: 16 })
+  const normalMap = toTexture(lawn.normal, { repeat: rep, anisotropy: 16 })
+  const ground = new Mesh(new PlaneGeometry(size, size), new MeshLambertMaterial({ map: colorMap, normalMap, normalScale: new Vector2(0.8, 0.8) }))
+  ground.rotation.x = -Math.PI / 2
+  ground.receiveShadow = true
+  root.add(ground)
+
+  const mats = legoMaterials()
+  buildTerraces(root, mats)
+  buildMountain(root, mats, 1)
+  buildMountain(root, mats, -1)
+  buildTrack(root)
+  buildChevrons(root)
+  buildPlaza(root)
+  const marks = new Group()
+  buildYardMarkings(marks)
+  buildGymMarkings(marks)
+  root.add(bake(marks, false))
+}
+
+export { legoTex }
+
+// Collision: the lawn, the rail bed, a fence along every edge and a block for each mountain.
+export function landColliders() {
+  const half = LOBBY.groundSize / 2
+  addFixed(RAPIER.ColliderDesc.cuboid(half, 2, half), { x: 0, y: -2, z: 0 }, null, { friction: 0.7 })
+  addFixed(RAPIER.ColliderDesc.cuboid(TRACK.end, TRACK.top / 2, TRACK.bedHalfWidth), { x: 0, y: TRACK.top / 2, z: TRACK.z }, null, { friction: 0.75 })
+  const { west, east, north, south, fenceHeight: h } = LOBBY
+  const fence = (hx, hz, x, z) => addFixed(RAPIER.ColliderDesc.cuboid(hx, h, hz), { x, y: h, z })
+  fence((east - west) / 2 + 4, 1, (east + west) / 2, north - 1)
+  fence((east - west) / 2 + 4, 1, (east + west) / 2, south + 1)
+  fence(1, (south - north) / 2 + 4, west - 1, (south + north) / 2)
+  fence(1, (south - north) / 2 + 4, east + 1, (south + north) / 2)
+  for (const sign of [1, -1]) {
+    addFixed(RAPIER.ColliderDesc.cuboid(20, 11, 25), { x: sign * (TRACK.mouth + 20.5), y: 11, z: TRACK.z })
+  }
 }
 
 function makeClouds() {
   const rand = mulberry32(2024)
   const geo = new IcosahedronGeometry(1, 3)
-  const mat = new MeshLambertMaterial({ color: '#ffffff', emissive: '#dcebff', emissiveIntensity: 0.62, fog: false })
+  const mat = new MeshLambertMaterial({ color: '#ffffff', emissive: '#e6f2ff', emissiveIntensity: 0.72, fog: false })
   const group = new Group()
-  for (let i = 0; i < 22; i++) {
-    // Mostly ahead (toward the sea, -Z), a few all around.
-    const ang = i < 15 ? -Math.PI / 2 + (rand() - 0.5) * Math.PI * 1.25 : rand() * Math.PI * 2
-    const dist = 240 + rand() * 170
+  for (let i = 0; i < 30; i++) {
+    const ang = rand() * Math.PI * 2
+    const dist = 290 + rand() * 150
     const cloud = new Group()
-    const puffs = 5 + Math.floor(rand() * 4)
-    const len = 22 + rand() * 26
+    const puffs = 6 + Math.floor(rand() * 5)
+    const len = 44 + rand() * 50
     for (let p = 0; p < puffs; p++) {
       const t = p / (puffs - 1) - 0.5
-      const r = (1 - Math.abs(t) * 1.1) * (9 + rand() * 6)
+      const r = (1 - Math.abs(t) * 1.1) * (17 + rand() * 12)
       const puff = new Mesh(geo, mat)
-      puff.scale.set(r, r * 0.82, r)
-      puff.position.set(t * len, r * 0.25 + rand() * 3, (rand() - 0.5) * 8)
+      puff.scale.set(r, r * 0.8, r)
+      puff.position.set(t * len, r * 0.25 + rand() * 6, (rand() - 0.5) * 14)
       cloud.add(puff)
     }
-    const flat = new Mesh(geo, mat) // flat underside
-    flat.scale.set(len * 0.62, 4, 9)
-    cloud.add(flat)
-    cloud.position.set(Math.cos(ang) * dist, 30 + rand() * 70, Math.sin(ang) * dist)
+    const flatBase = new Mesh(geo, mat)
+    flatBase.scale.set(len * 0.62, 6, 16)
+    cloud.add(flatBase)
+    cloud.position.set(Math.cos(ang) * dist, 50 + rand() * 90, Math.sin(ang) * dist)
     cloud.lookAt(0, cloud.position.y, 0)
     group.add(cloud)
   }
   return group
 }
 
-// The slab of land the start island stands on (sand on the beach, paving in the City): `top` is
-// the material of its flat top, `side` the colour of its rounded edge, `shallow` the lighter
-// water band hugging it. Visual only (landColliders is shared by every world).
-export function buildSlab(root, top, side, shallow) {
-  const outline = beachOutline()
-  const bevel = 0.6
-  const slabGeo = new ExtrudeGeometry(outlineShape(outline), {
-    depth: BEACH.depth,
-    bevelEnabled: true,
-    bevelThickness: bevel,
-    bevelSize: 1.2,
-    bevelSegments: 3,
-    curveSegments: 1,
-  })
-  slabGeo.rotateX(-Math.PI / 2)
-  const slab = new Mesh(slabGeo, [top, new MeshStandardMaterial({ color: side, roughness: 1 })])
-  slab.position.y = -(BEACH.depth + bevel)
-  slab.receiveShadow = true
-
-  // Shallow water: a lighter band just around the land.
-  const cz = (BEACH.front + BEACH.back) / 2
-  const shallowGeo = new ShapeGeometry(outlineShape(outline, 1.12, cz))
-  shallowGeo.rotateX(-Math.PI / 2)
-  const band = new Mesh(shallowGeo, new MeshStandardMaterial({ color: shallow, roughness: 0.3, transparent: true, opacity: 0.55, depthWrite: false }))
-  band.position.y = WATER.level + 0.04
-  band.renderOrder = 1
-  root.add(slab, band)
-}
-
-// The beach world's land: the cracked-sand slab, green hills on the far left
-// horizon and the rocky islet with its palms.
-export function buildBeachLand(root) {
-  // Sand slab: flat cracked top, rounded edge, darker wet sides.
-  const sand = paintCrackedSand()
-  const sandColor = toTexture(sand.color, { repeat: 1 / BEACH.tile, srgb: true })
-  const sandNormal = toTexture(sand.normal, { repeat: 1 / BEACH.tile })
-  const top = new MeshStandardMaterial({ map: sandColor, normalMap: sandNormal, normalScale: new Vector2(0.6, 0.6), roughness: 1, metalness: 0 })
-  buildSlab(root, top, '#dcc08a', WATER.shallow)
-
-  // Far scenery: green islands on the left horizon, a hazy mountain behind them.
-  root.add(
-    ...makeHill(-250, -300, 120, 30, 60, '#4dbb3c', 11),
-    ...makeHill(-130, -360, 55, 18, 35, '#45ad37', 12),
-    ...makeHill(-400, -470, 150, 60, 80, '#6f9fd6', 13),
-  )
-
-  // The islet: a low green hill with a grass-capped rock and two palms on it.
-  const I = ISLET
-  const islet = new Group()
-  islet.position.set(I.x, 0, I.z)
-  root.add(islet, ...makeHill(I.x, I.z, I.hill.rx, I.hill.ry, I.hill.rz, '#4dbb3c', 14))
-  buildCliff(root, isletRock(), 5, WATER.level - 1, false)
-  const rockTop = WATER.level - 1 + I.rock[4]
-  buildPalm(islet, -4, -2, 11, -0.3, 0.1, 50, rockTop)
-  buildPalm(islet, 6, 3, 9, 0.2, -0.2, 51, rockTop)
-}
-
-// The islet's rock (or the City's tower on it) in buildCliff's [x, z, w, d, h, yaw], world x / z.
-export function isletRock() {
-  const [rx, rz, ...rock] = ISLET.rock // offset from the islet centre
-  return [ISLET.x + rx, ISLET.z + rz, ...rock]
-}
-
-// Collision for the land (every world): the slab as a convex hull, a fence along every edge
-// and the islet's rock.
-export function landColliders() {
-  const outline = beachOutline()
-  const hull = []
-  for (const [x, z] of outline) hull.push(x, 0, z, x, -BEACH.depth, z)
-  addFixed(RAPIER.ColliderDesc.convexHull(new Float32Array(hull)), { x: 0, y: 0, z: 0 }, null, { friction: 0.9 })
-  for (let i = 0; i < outline.length; i++) {
-    const [ax, az] = outline[i]
-    const [bx, bz] = outline[(i + 1) % outline.length]
-    const len = Math.hypot(bx - ax, bz - az)
-    const yaw = Math.atan2(-(bz - az), bx - ax)
-    addFixed(
-      RAPIER.ColliderDesc.cuboid(len / 2 + 0.5, BEACH.fenceHeight / 2, 0.4),
-      { x: (ax + bx) / 2, y: BEACH.fenceHeight / 2, z: (az + bz) / 2 },
-      { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) },
-    )
-  }
-  cliffCollider(isletRock(), WATER.level - 1)
-}
-
-// What every world shares: the sea (its colour set per world) and the clouds.
 export function createWorld(scene) {
-  // Sea: physical material, two scrolling ripple layers, slightly see-through.
-  const ripples = paintWaterNormal()
-  const normalA = toTexture(ripples, { repeat: WATER.size / 14 })
-  const normalB = toTexture(ripples, { repeat: WATER.size / 37 })
-  const sea = new Mesh(
-    new PlaneGeometry(WATER.size, WATER.size),
-    new MeshPhysicalMaterial({
-      color: WATER.color,
-      roughness: 0.3,
-      metalness: 0,
-      normalMap: normalA,
-      normalScale: new Vector2(0.3, 0.3),
-      clearcoat: 1,
-      clearcoatRoughness: 0.08,
-      clearcoatNormalMap: normalB,
-      clearcoatNormalScale: new Vector2(0.5, 0.5),
-      transparent: true,
-      opacity: 0.94,
-    }),
-  )
-  sea.rotation.x = -Math.PI / 2
-  sea.position.y = WATER.level
-  sea.receiveShadow = true
-  scene.add(sea, makeClouds())
-
-  let scroll = 0 // m the sea has slid toward +Z (a race past RACE.cruiseZ moves the sea, not the boat)
-  return {
-    setSeaColor: (color) => sea.material.color.set(color),
-    setScroll: (m) => (scroll = m),
-    update(dt, elapsed) {
-      // One ripple tile is 14 m (A) / 37 m (B); v runs toward -Z.
-      // Wrapped to one tile: a 2 h race scrolls ~875 km, too far for a float32 offset.
-      normalA.offset.set(elapsed * 0.012, elapsed * 0.02 + ((scroll / 14) % 1))
-      normalB.offset.set(-elapsed * 0.008, elapsed * 0.005 + ((scroll / 37) % 1))
-    },
-  }
+  scene.add(makeClouds())
+  return { update() {} }
 }

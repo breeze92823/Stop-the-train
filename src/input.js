@@ -1,6 +1,5 @@
 // Keyboard + mouse. WASD/arrows move (camera-relative, consumed by player.js),
-// mouse look while pointer-locked (click grabs, Esc releases; drag where it is
-// refused or not yet granted) and wheel
+// drag on the world turns the camera (the cursor stays free for the HUD) and wheel
 // zoom (consumed by camera.js), edge-triggered actions cleared by their consumer.
 // Touch controls (touch.js) write look/zoom/jump directly and move/sprint via
 // setTouchMove/setTouchSprint, which are merged with the keys here.
@@ -22,13 +21,8 @@ let orbiting = false // right-drag fallback where pointer lock is refused
 let canvas = null
 const touch = { x: 0, z: 0, sprint: false }
 
-export const isLocked = () => !!canvas && document.pointerLockElement === canvas
-// Pointer lock can reject (sandboxed frame, post-Escape cooldown); that is not a fault.
-export function requestLock() {
-  if (!canvas || isLocked()) return
-  const r = canvas.requestPointerLock?.()
-  if (r instanceof Promise) r.catch(() => {})
-}
+// True while a key is physically down (hold-to-interact).
+export const isHeld = (code) => held.has(code)
 
 // Registers a one-shot key (fires on keydown, never on auto-repeat).
 export function onKey(code, fn) {
@@ -61,9 +55,6 @@ export function setTouchSprint(on) {
 
 export function install(showMenu, canvasEl) {
   canvas = canvasEl
-  document.addEventListener('pointerlockchange', () => {
-    if (isLocked()) orbiting = false
-  })
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement) return
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
@@ -83,20 +74,14 @@ export function install(showMenu, canvasEl) {
   })
   window.addEventListener('pointerdown', (e) => {
     const onWorld = e.target === canvas
-    if (e.button === 2 && !isLocked()) orbiting = true
-    if (e.button === 0 && onWorld && e.pointerType === 'mouse') {
-      // A click on the world takes the cursor (Esc gives it back; never on touch: there is no
-      // cursor), also mid-race, where the click is a boost tap too. Until the lock lands (or where
-      // it is refused) the drag turns the camera instead.
-      requestLock()
-      if (!isLocked()) orbiting = true
-    }
+    // The cursor stays free for the HUD (DROP CAR, Upgrade...): dragging the world turns the camera.
+    if (e.pointerType === 'mouse' && onWorld && (e.button === 0 || e.button === 2)) orbiting = true
   })
   window.addEventListener('pointerup', (e) => {
     if (e.button === 0 || e.button === 2) orbiting = false
   })
   window.addEventListener('pointermove', (e) => {
-    if (!orbiting && !isLocked()) return
+    if (!orbiting) return
     inputState.look.dx += e.movementX || 0
     inputState.look.dy += e.movementY || 0
   })

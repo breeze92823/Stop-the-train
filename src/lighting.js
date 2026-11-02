@@ -109,7 +109,7 @@ export function createLighting(scene, renderer, preset) {
   sun.castShadow = preset.shadows
   sun.shadow.mapSize.set(preset.shadowMap, preset.shadowMap)
   const r = LIGHT.shadowRange
-  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 1, far: 220 })
+  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 1, far: LIGHT.sunDistance + 180 })
   sun.shadow.bias = -0.0004
   sun.shadow.normalBias = 0.03
   scene.add(hemi, sun, sun.target)
@@ -211,7 +211,7 @@ export function createLighting(scene, renderer, preset) {
       }
       sky.position.set(focus.x, 0, focus.z)
       stars.position.copy(sky.position)
-      sun.position.set(focus.x + dir.x * 90, focus.y + dir.y * 90, focus.z + dir.z * 90)
+      sun.position.set(focus.x + dir.x * LIGHT.sunDistance, focus.y + dir.y * LIGHT.sunDistance, focus.z + dir.z * LIGHT.sunDistance)
       sun.target.position.set(focus.x, focus.y, focus.z)
       sun.target.updateMatrixWorld()
     },

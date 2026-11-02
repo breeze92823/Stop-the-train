@@ -17,7 +17,12 @@ export const player = {
   grounded: true,
   facing: SPAWN_FACING, // yaw the character model faces, radians
   dims: { ...PLAYER_DIMS },
-  racing: false, // race.js drives position/renderPosition itself; the controller stands still
+  speedScale: 1, // walk speed factor (a carried vehicle slows the player)
+  stun: 0, // s left without control after being hit by a train
+  locked: false, // on a bench: no movement, and a jump press goes to onLockedJump instead
+  onLockedJump: null,
+  dead: false, // fell out of the world and the portal's death screen is up: frozen until it allows a respawn
+  onFall: null, // () => true when something (the death screen) took over the respawn
 }
 
 const HALF = PLAYER_DIMS.height / 2 // capsule centre above the feet
@@ -52,9 +57,20 @@ export function resetPlayer(spawn = SPAWN, facing = SPAWN_FACING) {
   player.position.z = prev.z = player.renderPosition.z = spawn.z
   player.velocity.x = player.velocity.y = player.velocity.z = 0
   player.grounded = true
+  player.dead = false
   player.facing = facing
   body?.setTranslation({ x: spawn.x, y: spawn.y + HALF, z: spawn.z }, true)
   body?.setNextKinematicTranslation({ x: spawn.x, y: spawn.y + HALF, z: spawn.z })
+}
+
+// A train's hit: thrown clear, no control for a moment.
+export function launchPlayer(vx, vy, vz) {
+  if (player.stun > 0) return
+  player.velocity.x = vx
+  player.velocity.y = vy
+  player.velocity.z = vz
+  player.stun = 0.9
+  player.grounded = false
 }
 
 export function respawn() {
@@ -89,7 +105,15 @@ function step(dt) {
   prev.x = player.position.x
   prev.y = player.position.y
   prev.z = player.position.z
-  if (player.racing) return
+
+  if (player.locked || player.dead) {
+    player.velocity.x = player.velocity.y = player.velocity.z = 0
+    if (inputState.jump) {
+      inputState.jump = false
+      player.onLockedJump?.()
+    }
+    return
+  }
 
   // Camera-relative ground basis.
   const yaw = getYaw()
@@ -102,10 +126,11 @@ function step(dt) {
   const scale = len > 1 ? 1 / len : 1
   const wishX = (fwdX * mv.z + rightX * mv.x) * scale
   const wishZ = (fwdZ * mv.z + rightZ * mv.x) * scale
-  const speed = inputState.sprint ? PHYSICS.sprintSpeed : PHYSICS.walkSpeed
+  const speed = (inputState.sprint ? PHYSICS.sprintSpeed : PHYSICS.walkSpeed) * player.speedScale
 
   const rate = !player.grounded ? PHYSICS.airAccel : len > 0.01 ? PHYSICS.accel : PHYSICS.decel
-  approach2D(player.velocity, wishX * speed, wishZ * speed, rate * dt)
+  if (player.stun > 0) player.stun -= dt
+  else approach2D(player.velocity, wishX * speed, wishZ * speed, rate * dt)
 
   // Jump: buffered a little before landing, and allowed a little after leaving a ledge.
   if (inputState.jump) {
@@ -123,7 +148,7 @@ function step(dt) {
   jumpQueued = Math.max(0, jumpQueued - dt)
 
   player.velocity.y += PHYSICS.gravity * dt
-  if (player.grounded && !jumped && player.velocity.y < -2) player.velocity.y = -2 // stay pressed to slopes
+  if (player.grounded && !jumped && player.velocity.y < -2 && player.stun <= 0) player.velocity.y = -2 // stay pressed to slopes
 
   const desired = { x: player.velocity.x * dt, y: player.velocity.y * dt, z: player.velocity.z * dt }
   controller.computeColliderMovement(collider, desired, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS)
@@ -133,6 +158,7 @@ function step(dt) {
   // Blocked vertically: a ceiling stops the rise, the floor stops the fall.
   if (player.velocity.y > 0 && moved.y < desired.y * 0.5) player.velocity.y = 0
   if (player.grounded && player.velocity.y < 0) player.velocity.y = Math.max(player.velocity.y, -2)
+  if (player.grounded && player.stun > 0 && player.velocity.y <= 0) player.velocity.x = player.velocity.z = 0 // landed from a hit
   // Horizontal velocity is left alone: the controller already slides along walls,
   // and scaling it by moved/desired would also bleed speed on every ramp and step.
 
@@ -144,6 +170,11 @@ function step(dt) {
   player.position.z = next.z
 
   if (player.position.y < PHYSICS.killY) {
+    if (player.onFall?.()) {
+      player.dead = true
+      player.velocity.x = player.velocity.y = player.velocity.z = 0
+      return
+    }
     respawn()
     return
   }

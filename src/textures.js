@@ -498,7 +498,14 @@ export function paintText(text, { color = '#ffffff', colors = null, outline = '#
         ctx.strokeStyle = outline
         ctx.strokeText(line, c.width / 2, y)
       }
-      ctx.fillStyle = colors?.[i] ?? color
+      const fill = colors?.[i] ?? color
+      if (Array.isArray(fill)) {
+        // [top, bottom]: a vertical gradient across the line.
+        const g = ctx.createLinearGradient(0, y - px * 0.5, 0, y + px * 0.5)
+        g.addColorStop(0.15, fill[0])
+        g.addColorStop(0.85, fill[1])
+        ctx.fillStyle = g
+      } else ctx.fillStyle = fill
       ctx.fillText(line, c.width / 2, y)
     })
   }
@@ -730,5 +737,142 @@ export function paintChecker(a = '#ff5fa8', b = '#ff7fbc', size = 64) {
   ctx.fillStyle = b
   ctx.fillRect(0, 0, size / 2, size / 2)
   ctx.fillRect(size / 2, size / 2, size / 2, size / 2)
+  return c
+}
+
+// --- Lego surfaces -----------------------------------------------------------------
+// A 2x2 checker of two tones, every cell covered in rounded square studs that catch
+// the light on one side: colour plus a derived normal map. perCell = studs per cell side.
+export function paintLego({ a, b, size = 512, perCell = 4, strength = 2.4, ring = 0.2, lit = 0.26 }) {
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  const cell = size / 2
+  const stud = cell / perCell
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 2; x++) {
+      ctx.fillStyle = (x + y) % 2 ? b : a
+      ctx.fillRect(x * cell, y * cell, cell, cell)
+    }
+  }
+  const n = perCell * 2
+  const inner = stud * 0.62
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const px = (x + 0.5) * stud - inner / 2
+      const py = (y + 0.5) * stud - inner / 2
+      ctx.lineWidth = stud * 0.09
+      ctx.strokeStyle = `rgba(0,30,20,${ring})`
+      ctx.beginPath()
+      ctx.roundRect(px, py, inner, inner, stud * 0.14)
+      ctx.stroke()
+      // The lit edge breaks the outline into the reference's little "C" glyph.
+      ctx.strokeStyle = `rgba(255,255,255,${lit})`
+      ctx.beginPath()
+      ctx.moveTo(px + inner * 0.2, py + stud * 0.03)
+      ctx.lineTo(px + inner * 0.86, py + stud * 0.03)
+      ctx.stroke()
+    }
+  }
+  const h = new Float32Array(size * size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = Math.abs(((x + 0.5) % stud) / stud - 0.5)
+      const v = Math.abs(((y + 0.5) % stud) / stud - 0.5)
+      const d = Math.max(u, v)
+      const t = Math.max(0, Math.min(1, (0.36 - d) / 0.05))
+      h[y * size + x] = t * t * (3 - 2 * t)
+    }
+  }
+  return { color: c, normal: heightToNormal(h, size, strength) }
+}
+
+// The terrace wall: big two-tone brown squares made of little bricks.
+export function paintTerrace({ a = '#b65a2a', b = '#cf7238', size = 512 } = {}) {
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  const cell = size / 2
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 2; x++) {
+      ctx.fillStyle = (x + y) % 2 ? b : a
+      ctx.fillRect(x * cell, y * cell, cell, cell)
+    }
+  }
+  const n = 16
+  const brick = size / n
+  const h = new Float32Array(size * size).fill(1)
+  ctx.lineWidth = 2
+  for (let y = 0; y < n; y++) {
+    const off = y % 2 ? brick / 2 : 0
+    for (let x = -1; x < n; x++) {
+      const px = x * brick + off
+      const py = y * brick
+      ctx.strokeStyle = 'rgba(70,20,0,0.22)'
+      ctx.strokeRect(px + 2, py + 2, brick - 4, brick - 4)
+      ctx.strokeStyle = 'rgba(255,220,180,0.14)'
+      ctx.beginPath()
+      ctx.moveTo(px + 3, py + 3)
+      ctx.lineTo(px + brick - 3, py + 3)
+      ctx.stroke()
+      const x0 = Math.max(0, Math.round(px))
+      const x1 = Math.min(size, Math.round(px + brick))
+      for (let i = x0; i < x1; i++) h[Math.round(py) * size + i] = 0
+      if (px >= 0 && px < size) for (let j = 0; j < brick; j++) h[(Math.round(py) + j) * size + Math.round(px)] = 0
+    }
+  }
+  return { color: c, normal: heightToNormal(h, size, 1.2) }
+}
+
+// Soft cloud puffs in a 2x2 atlas: fbm eaten away by a radial falloff (alpha in A).
+export function paintPuffAtlas(size = 256) {
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  const img = ctx.createImageData(size, size)
+  const half = size / 2
+  const noise = fbm(size, 5, 4, 88)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = ((x % half) / half) * 2 - 1
+      const v = ((y % half) / half) * 2 - 1
+      const r = Math.hypot(u, v)
+      const n = noise[y * size + x]
+      const a = Math.max(0, Math.min(1, (1 - r * (1.15 - n * 0.3)) * 2.4 - (1 - n) * 0.85))
+      const i = (y * size + x) * 4
+      const l = 170 + n * 85
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = l
+      img.data[i + 3] = a * 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+  return c
+}
+
+// Yellow-black hazard stripes.
+export function paintHazard(size = 128) {
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  ctx.fillStyle = '#f5c518'
+  ctx.fillRect(0, 0, size, size)
+  ctx.fillStyle = '#17171c'
+  for (let i = -size; i < size * 2; i += size / 2) {
+    ctx.beginPath()
+    ctx.moveTo(i, size)
+    ctx.lineTo(i + size / 4, size)
+    ctx.lineTo(i + size / 4 + size, 0)
+    ctx.lineTo(i + size, 0)
+    ctx.fill()
+  }
+  return c
+}
+
+// A dark radial scorch or skid mark on a transparent canvas.
+export function paintScorch(size = 128) {
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.06, size / 2, size / 2, size / 2)
+  g.addColorStop(0, 'rgba(8,6,6,0.92)')
+  g.addColorStop(0.55, 'rgba(14,12,10,0.7)')
+  g.addColorStop(1, 'rgba(20,16,12,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
   return c
 }

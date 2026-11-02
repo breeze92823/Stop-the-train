@@ -29,6 +29,12 @@ let zoomEased = CAMERA.distance
 let rush = 0 // eased 0..1 sprint factor
 let clearance = 1 // 0..1 of the boom the walls allow, eased back out
 
+// Trauma-style shake: addShake bumps it, it dies away exponentially.
+let shake = 0
+export function addShake(amount) {
+  shake = Math.min(1, shake + amount)
+}
+
 export const getYaw = () => state.yaw
 export const getPitch = () => state.pitch
 
@@ -142,4 +148,13 @@ export function update(camera, dt) {
 
   camera.position.set(look.x + (px - look.x) * clearance, look.y + (py - look.y) * clearance, look.z + (pz - look.z) * clearance)
   camera.lookAt(look.x, look.y, look.z)
+  if (shake > 0.002) {
+    const t = performance.now() * 0.001
+    const k = shake * shake * CAMERA.shakeMax
+    camera.position.x += Math.sin(t * 61) * k
+    camera.position.y += Math.sin(t * 73 + 1) * k * 0.8
+    camera.position.z += Math.sin(t * 53 + 2) * k
+    camera.rotation.z += Math.sin(t * 41) * k * 0.05
+    shake *= Math.exp(-CAMERA.shakeDecay * dt)
+  }
 }

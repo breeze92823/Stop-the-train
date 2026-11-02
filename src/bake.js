@@ -35,7 +35,10 @@ export function bake(root, castShadow = false) {
     if (merged) out.add(new Mesh(merged, mat))
   }
   out.traverse((o) => {
-    if (o.isMesh) o.castShadow = castShadow
+    if (o.isMesh) {
+      o.castShadow = castShadow
+      o.receiveShadow = true
+    }
   })
   return out
 }
