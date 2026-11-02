@@ -372,11 +372,18 @@ export function createTrains(scene, fx, sound, hooks) {
   function clear(dust) {
     // Pulling bodies out of the world mid-wreck panics Rapier (the joints and contacts still point at
     // them), so they are switched off now and removed once the world has stepped without them.
+    // The coupling joints go first, while both of their bodies are still alive: disabling or removing
+    // a body that still owns a joint is what trips Rapier's `unreachable`.
     const bodies = t.cars.map((c) => c.body)
+    for (const j of t.joints) world.removeImpulseJoint(j, false)
     t.joints.length = 0
-    for (const b of bodies) b.setEnabled(false)
+    for (const b of bodies) {
+      b.setLinvel({ x: 0, y: 0, z: 0 }, false)
+      b.setAngvel({ x: 0, y: 0, z: 0 }, false)
+      b.setEnabled(false)
+    }
     setTimeout(() => {
-      for (const b of bodies) removeBody(b)
+      for (const b of bodies) if (world.getRigidBody(b.handle)) removeBody(b)
     }, 250)
     for (const c of t.cars) {
       if (c.burning) fx.removeEmitter(c.burning)

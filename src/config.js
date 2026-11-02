@@ -279,7 +279,7 @@ export const WORLDS = {
     ambience: 'space',
     stardust: { rate: 16, reach: 30, height: 15, kinds: ['violet', 'cyan', 'magic'] }, // specks drifting round the player
     planets: [
-      { x: -300, y: 190, z: -330, r: 92, tilt: 0.3, seed: 11, bands: ['#f4c27a', '#d9824a', '#f7dcae', '#b4552e', '#eeb36a'], ring: { color: '#ffe0b0', inner: 1.4, outer: 2.3, tiltX: 1.2, tiltY: 0.3 } },
+      { x: -300, y: 190, z: -330, r: 92, tilt: 0.3, seed: 11, bands: ['#f4c27a', '#d9824a', '#f7dcae', '#b4552e', '#eeb36a'], ring: { color: '#ffe0b0', inner: 1.35, outer: 2.35, tiltX: 1.9, tiltY: 0.35 } },
       { x: 360, y: 150, z: -240, r: 56, tilt: -0.2, seed: 23, bands: ['#2ad1ff', '#1a6cf0', '#7ff0ff', '#1440b8'] },
       { x: 300, y: 250, z: 340, r: 38, tilt: 0.5, seed: 37, bands: ['#ff6fb1', '#c02a8c', '#ffb0d8', '#7a1a78'] },
       { x: -380, y: 110, z: 300, r: 28, tilt: 0.1, seed: 41, bands: ['#b9bdd0', '#7f8399', '#dfe2ee', '#5d6078'] },

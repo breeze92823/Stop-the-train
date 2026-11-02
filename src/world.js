@@ -25,7 +25,7 @@ import { GYM, LOBBY, SET, TRACK, YARD } from './config.js'
 import { RAPIER, addFixed } from './physics.js'
 import { bake } from './bake.js'
 import { buildVoxels } from './voxels.js'
-import { mulberry32, paintLego, paintPlanet, paintTerrace, toTexture } from './textures.js'
+import { mulberry32, paintLego, paintPlanet, paintRings, paintTerrace, toTexture } from './textures.js'
 import { onTheme, themeColors, themeMaterial } from './theme.js'
 
 // The ground of the lobby: the studded lawn, the checkered terraces walling it in,
@@ -443,7 +443,9 @@ function makeSpace({ planets, belt }) {
     group.add(planet)
     turning.push(planet)
     if (p.ring) {
-      const ring = new Mesh(new RingGeometry(p.r * p.ring.inner, p.r * p.ring.outer, 96), new MeshBasicMaterial({ color: p.ring.color, transparent: true, opacity: 0.5, side: DoubleSide, depthWrite: false, fog: false }))
+      const bands = new CanvasTexture(paintRings(p.ring.color, p.ring.inner / p.ring.outer, p.seed))
+      bands.colorSpace = SRGBColorSpace
+      const ring = new Mesh(new RingGeometry(p.r * p.ring.inner, p.r * p.ring.outer, 96), new MeshBasicMaterial({ map: bands, transparent: true, side: DoubleSide, depthWrite: false, fog: false }))
       ring.position.copy(planet.position)
       ring.rotation.set(p.ring.tiltX, p.ring.tiltY, 0)
       group.add(ring)

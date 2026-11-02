@@ -848,7 +848,7 @@ export function paintNebula({ seed, clouds, colors, band, stars }, w = 2048, h =
   // Most of the colour hangs along the band; the rest is scattered over the sky.
   for (let i = 0; i < clouds; i++) {
     const x = rand() * w
-    const y = i % 3 ? bandY(x) + (rand() - 0.5) * h * 0.26 : rand() * h * 0.62
+    const y = i % 3 ? bandY(x) + (rand() - 0.5) * h * 0.26 : h * (0.24 + rand() * 0.34)
     blob(x, y, h * (0.1 + rand() * 0.24), colors[i % colors.length], 0.2 + rand() * 0.22)
   }
   for (let i = 0; i < 110; i++) {
@@ -890,6 +890,26 @@ export function paintPlanet(bands, seed, w = 512, h = 256) {
     ctx.fillRect(x - w, y, len, t) // across the seam
   }
   ctx.globalAlpha = 1
+  return c
+}
+
+// A planet's rings, laid on RingGeometry's flat UVs: thin circles of dust with gaps between them.
+// `inner` is the hole, as a fraction of the outer radius.
+export function paintRings(color, inner, seed, size = 512) {
+  const rand = mulberry32(seed)
+  const c = canvas(size)
+  const ctx = c.getContext('2d')
+  const [r, g, b] = hexRgb(color)
+  const half = size / 2
+  for (let at = half * inner; at < half; ) {
+    const w = 2 + rand() * 9
+    ctx.strokeStyle = `rgba(${r},${g},${b},${rand() < 0.16 ? 0.05 : 0.3 + rand() * 0.6})`
+    ctx.lineWidth = w
+    ctx.beginPath()
+    ctx.arc(half, half, at, 0, Math.PI * 2)
+    ctx.stroke()
+    at += w
+  }
   return c
 }
 

@@ -55,7 +55,8 @@ const skyFragment = /* glsl */ `
     vec3 n = normalize(vDir);
     if (nebula > 0.0) {
       vec2 uv = vec2(atan(n.z, n.x) / 6.2831853 + 0.5, asin(clamp(n.y, -1.0, 1.0)) / 3.1415927 + 0.5);
-      col += texture2D(nebulaMap, uv).rgb * nebula;
+      // Faded out overhead: the map's columns pinch together there and a cloud's edge turns into a line.
+      col += texture2D(nebulaMap, uv).rgb * nebula * (1.0 - smoothstep(0.45, 0.9, n.y));
     }
     float d = max(dot(n, sunDir), 0.0);
     col += sunColor * (pow(d, 900.0) * 6.0 + pow(d, 24.0) * 0.25); // disc + halo

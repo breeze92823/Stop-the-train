@@ -17,6 +17,7 @@ import { createCoins } from './coins.js'
 import { createGame } from './game.js'
 import { createShared } from './shared.js'
 import { createWorlds } from './worlds.js'
+import { currentWorld } from './theme.js'
 import { createHud } from './hud.js'
 import { addCoins, compact, loadProgress, state as progress } from './progress.js'
 import { initNet, net, onBoards, sendCarry, sendEmote, sendPose, sendTrain, syncAvatar } from './net.js'
@@ -448,5 +449,5 @@ if (import.meta.env.DEV) {
     }
     return (performance.now() - t0) / n
   }
-  window.__game = { sound, audioCore: AudioCore, player, scene, renderer, camera, postfx, bodies: bodyCount, toggleMode, teleport, game, rail, trains, yard, gym, fx, hud, coins, interact, advance, bench, applySetting, input: inputState, TRACK, progress, worlds, remotes, net }
+  window.__game = { sound, audioCore: AudioCore, player, scene, renderer, camera, postfx, bodies: bodyCount, toggleMode, teleport, game, rail, trains, yard, gym, fx, hud, coins, interact, advance, bench, applySetting, input: inputState, TRACK, progress, worlds, currentWorld, remotes, net }
 }

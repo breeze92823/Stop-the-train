@@ -384,6 +384,7 @@ function boardCanvas(entry) {
       ctx.fillRect(74, y + 9, 44, 44)
       const row = rows ? rows[i] : i === 0 ? { name, value } : null
       if (row) {
+        ctx.fillStyle = '#3b1e04'
         ctx.fillText(String(row.name).slice(0, 14), 130, y + 33)
         ctx.textAlign = 'right'
         ctx.fillStyle = entry.colors[1]
