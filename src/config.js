@@ -560,10 +560,11 @@ export const ROUND = {
   slowMo: { scale: 0.28, seconds: 0.95, ease: 0.7 }, // time dilation the instant a train derails
   nextShownAt: [60, 54], // s left on the countdown while the HUD says NEXT TRAIN IS
   doubleChance: 0.3, // a new train pays X2 COINS this often
+  throughShare: 0.4, // share of a pass's hit coins still dropped when the train gets through
 }
 
 // Trains, weakest first. hp is what the parked vehicles must beat; a train that gets through
-// keeps its damage and comes back. reward is coins for stopping it.
+// pays no reward and a new one is picked. reward is coins for stopping it.
 // wagons: 'box' | 'gondola' | 'tank'. aura: sparkles trailing the train.
 export const TRAINS = [
   { id: 'common', name: 'COMMON', text: ['#f4f6f8', '#8b95a1'], hp: 12e3, reward: 120e3, speed: 25, weight: 44, wagons: ['box', 'gondola'], paint: '#6f7f91', trim: '#2f3a46', stripe: '#f2c230' },

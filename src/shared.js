@@ -1,5 +1,4 @@
 import { TRAINS } from './config.js'
-import { compact } from './progress.js'
 import { net, onNetMessage, sendNet } from './net.js'
 
 // The shared round: the server (backend round.ts) holds ONE rail and ONE train per world, so every
@@ -8,7 +7,7 @@ import { net, onNetMessage, sendNet } from './net.js'
 // and are drawn here; the piles and the wreck stay local rigid bodies. With no server the local
 // round in game.js keeps running unchanged. Travelling drops g.shared until the new world's `round`
 // arrives, so what is still on its way from the old world finds nothing to act on.
-export function createShared({ game, rail, trains, hud, sound }) {
+export function createShared({ game, rail, trains, hud }) {
   const { g } = game
   const mine = (by) => !!by && by === net.sessionId
   // Another player's vehicle (the seeded ones have no owner): the local player cannot push it.
@@ -77,10 +76,6 @@ export function createShared({ game, rail, trains, hud, sound }) {
     trains.netFinish(m.result)
     game.apply(m, spec)
     g.phase = 'countdown'
-    if (m.result === 'through') {
-      hud.showBanner('THE TRAIN GOT THROUGH!', `NO COINS! ${compact(m.hp)} HP LEFT. PARK MORE VEHICLES!`, 4200)
-      sound.trainLost()
-    }
   })
 
   // The link dropped: the local round takes over until the server's next `round` message.

@@ -6,8 +6,8 @@ import * as bloxity from './bloxity.js'
 import { addShake } from './camera.js'
 
 // The round loop: a countdown, a train, its wreck, the next train. A train that gets
-// through keeps its damage and comes back, paying nothing; a train brought to 0 HP derails and
-// pays out, the coins of every hit of that pass included.
+// through drops part of its hit coins and a new random train is sent; a train brought to 0 HP
+// derails and pays out, the coins of every hit of that pass included.
 const pos = new Vector3()
 
 function weightedTrain() {
@@ -54,14 +54,21 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     addShake(k / (1 + (d / 50) ** 2))
   }
 
-  // The coins of this pass's hits: they burst out of the wrecks if the train derails and are lost
-  // if it gets through. Merged down to what the coin pool can show at once.
+  // The coins of this pass's hits: they burst out of the wrecks if the train derails, and a
+  // ROUND.throughShare of them does if it gets through. Merged down to what the coin pool can
+  // show at once. Returns the coins dropped.
   const owed = []
-  const payOwed = () => {
+  const payOwed = (share = 1) => {
     const room = Math.floor(COINS.max / COINS.perCluster)
     const piles = owed.splice(0)
     piles.slice(room).forEach((o, i) => (piles[i % room].value += o.value))
-    for (const o of piles.slice(0, room)) coins.spawn(o.x, o.z, o.value)
+    let paid = 0
+    for (const o of piles.slice(0, room)) {
+      const value = Math.ceil(o.value * share)
+      coins.spawn(o.x, o.z, value)
+      paid += value
+    }
+    return paid
   }
 
   const hooks = {
@@ -104,25 +111,24 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
       hud.flash(0.28 * big)
     },
     onGone(result) {
+      const paid = result === 'through' ? payOwed(ROUND.throughShare) : 0
       owed.length = 0
       rail.sweep()
+      if (result === 'through') {
+        hud.showBanner('THE TRAIN GOT THROUGH!', paid ? `GRAB YOUR ${compact(paid)} COINS BY THE RAIL!` : 'PARK MORE VEHICLES!', 4200)
+        sound.trainLost()
+      }
       if (g.shared) {
         // The server decides what comes next (shared.js `gone`); this is only the clean-up.
         if (result === 'stopped') fx.fadeDecals()
         g.phase = 'countdown'
         return
       }
-      if (result === 'stopped') {
-        g.spec = weightedTrain()
-        g.hp = g.spec.hp
-        g.back = false
-        g.doubled = Math.random() < ROUND.doubleChance
-        fx.fadeDecals()
-      } else {
-        g.back = true
-        hud.showBanner('THE TRAIN GOT THROUGH!', `NO COINS! ${compact(g.hp)} HP LEFT. PARK MORE VEHICLES!`, 4200)
-        sound.trainLost()
-      }
+      g.spec = weightedTrain()
+      g.hp = g.spec.hp
+      g.back = false
+      g.doubled = Math.random() < ROUND.doubleChance
+      if (result === 'stopped') fx.fadeDecals()
       lobby.setRarity(g.spec)
       g.phase = 'countdown'
       g.left = ROUND.countdown

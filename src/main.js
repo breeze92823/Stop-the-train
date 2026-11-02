@@ -158,7 +158,7 @@ player.onLockedJump = () => gym.stop()
 const game = createGame({ fx, sound, hud, lobby, rail, coins, trains: { spawn: (...a) => trains.spawn(...a) } })
 const trains = createTrains(scene, fx, sound, game.hooks)
 game.seed()
-const shared = createShared({ game, rail, trains, hud, sound })
+const shared = createShared({ game, rail, trains, hud })
 const worlds = createWorlds({ game, rail, trains, fx, gym, hud, sound, lighting })
 loadProgress()
 // The server's save replaces the local cache once it answers (signed-in players).

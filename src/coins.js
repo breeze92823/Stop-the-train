@@ -3,8 +3,8 @@ import { COINS } from './config.js'
 import { upgradeValue } from './progress.js'
 import { player } from './player.js'
 
-// Gold coins that burst out of the smashed vehicles when a train derails and hover by the
-// rail until the player walks through them.
+// Gold coins that burst out of the smashed vehicles when a train derails or gets through and
+// hover by the rail until the player walks through them.
 const m = new Matrix4()
 const p = new Vector3()
 const q = new Quaternion()
