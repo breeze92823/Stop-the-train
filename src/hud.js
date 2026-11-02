@@ -432,13 +432,14 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
       top.style.setProperty('--c1', spec.text[0])
       top.style.setProperty('--c2', spec.text[1])
     },
-    setCountdown(text, seconds, colors) {
+    // The coming train's name is on the CURRENT TRAIN sign over the rail; the HUD takes its colours.
+    setCountdown(text, seconds, spec) {
       barWrap.style.display = next.style.display = 'none'
       timer.style.display = ''
       title.textContent = text
       secs.textContent = `${Math.ceil(seconds)} SECONDS`
-      top.style.setProperty('--c1', colors[0])
-      top.style.setProperty('--c2', colors[1])
+      top.style.setProperty('--c1', spec.text[0])
+      top.style.setProperty('--c2', spec.text[1])
     },
     showTrain(spec, hp, reward = spec.reward) {
       timer.style.display = next.style.display = 'none'

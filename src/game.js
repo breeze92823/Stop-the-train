@@ -127,9 +127,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     if (g.phase === 'countdown') {
       g.left -= dt
       const s = Math.ceil(g.left)
-      const [from, to] = ROUND.nextShownAt
-      if (!g.back && g.left <= from && g.left > to) hud.setNext(g.spec, g.doubled)
-      else hud.setCountdown(g.back ? 'TRAIN COMING BACK IN:' : 'TRAIN COMING IN:', Math.max(0, g.left), g.spec.text)
+      hud.setCountdown(g.back ? 'TRAIN COMING BACK IN:' : 'TRAIN COMING IN:', Math.max(0, g.left), g.spec)
       if (s !== g.lastSecond) {
         g.lastSecond = s
         if (s <= ROUND.warnSeconds && s > 0) {

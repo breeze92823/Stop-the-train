@@ -23,6 +23,7 @@ export function createFuse({ rail, yard, hud, lobby, fx, sound }) {
     const spec = yard.takeHeld()
     if (!spec) return
     slots.push(spec)
+    lobby.fuseShow(slots.length - 1, spec)
     sync()
     sound.buy()
     for (let i = 0; i < 16; i++) fx.sparkle({ x: at.x, y: 2 + Math.random() * 2, z: at.z }, 'cyan', 2)
@@ -57,6 +58,7 @@ export function createFuse({ rail, yard, hud, lobby, fx, sound }) {
       const hp = slots.reduce((sum, s) => sum + s.hp, 0)
       const won = Math.random() * 100 < chance
       slots.length = 0
+      lobby.fuseClear()
       sync()
       hud.closeWindow()
       if (won) {

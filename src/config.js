@@ -490,6 +490,11 @@ export const TRAINS = [
   { id: 'rare', name: 'RARE', text: ['#8fe2ff', '#2f8df0'], hp: 300e3, reward: 3.2e6, speed: 29, weight: 16, wagons: ['gondola', 'box', 'gondola'], paint: '#dfe9f2', trim: '#2a6fd0', stripe: '#39b6ff' },
   { id: 'epic', name: 'EPIC', text: ['#e7a8ff', '#a43cf0'], hp: 3e6, reward: 14e6, speed: 31, weight: 8, wagons: ['tank', 'box', 'tank', 'box'], paint: '#51308f', trim: '#1e1140', stripe: '#d27bff', aura: '#c76bff' },
   { id: 'legendary', name: 'LEGENDARY', text: ['#fff36a', '#ffb400'], hp: 57e6, reward: 57e6, speed: 33, weight: 4, wagons: ['box', 'gondola', 'box', 'gondola'], paint: '#8e2432', trim: '#3a0d16', stripe: '#ff9cc8', aura: '#ff7ad9' },
+  { id: 'mythic', name: 'MYTHIC', text: ['#ff7a5c', '#e0121c'], hp: 500e6, reward: 420e6, speed: 35, weight: 2, wagons: ['tank', 'box', 'gondola', 'tank', 'box'], paint: '#b01218', trim: '#2a0508', stripe: '#ffcf3a', aura: '#ff3b2e' },
+  { id: 'godly', name: 'GODLY', text: ['#fff7b0', '#f2b705'], hp: 4e9, reward: 3.1e9, speed: 36, weight: 1, wagons: ['gondola', 'tank', 'box', 'tank', 'gondola'], paint: '#e8c547', trim: '#6b4a05', stripe: '#ffffff', aura: '#ffd84a' },
+  { id: 'divine', name: 'DIVINE', text: ['#e8fbff', '#6fd8ff'], hp: 35e9, reward: 24e9, speed: 37, weight: 0.5, wagons: ['box', 'tank', 'gondola', 'box', 'tank', 'box'], paint: '#f1f7fb', trim: '#5a9fc4', stripe: '#8fe9ff', aura: '#9fe8ff' },
+  { id: 'cosmic', name: 'COSMIC', text: ['#9ab0ff', '#6a2cf0'], hp: 300e9, reward: 200e9, speed: 38, weight: 0.25, wagons: ['tank', 'gondola', 'tank', 'box', 'gondola', 'tank'], paint: '#1c1650', trim: '#0a0728', stripe: '#a56bff', aura: '#7b5cff' },
+  { id: 'secret', name: 'SECRET', text: ['#ff9bf0', '#25e6c8'], hp: 2.5e12, reward: 1.6e12, speed: 40, weight: 0.1, wagons: ['box', 'tank', 'gondola', 'tank', 'box', 'gondola'], paint: '#0d0d12', trim: '#25e6c8', stripe: '#ff4fd8', aura: '#ff5ae0' },
 ]
 
 // Progress (progress.js). A new save starts at these numbers. `power` is the player's Strength.

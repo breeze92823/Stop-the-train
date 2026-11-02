@@ -32,6 +32,7 @@ import { net, requestAdReward } from './net.js'
 import { player } from './player.js'
 import { mulberry32, paintHazard, paintLego, toTexture } from './textures.js'
 import { dashedRect, terraceTop } from './world.js'
+import { makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
 
 // Everything standing on the lawn: the Upgrade stall and its NPC, the Fuse Machine, the
 // ADMIN ABUSE sign, the mailbox, the galaxy portal, trees, palms, rocks and the floating
@@ -163,6 +164,7 @@ function buildFuse(root) {
   const cyan = neon('#22e6ff', 2.4)
   const hazard = new MeshStandardMaterial({ map: toTexture(paintHazard(), { srgb: true }), roughness: 0.5 })
   hazard.map.repeat.set(6, 1)
+  const trays = [] // the three feeder ramps: where inserted vehicles sit
   // The stepped hull.
   put(f, box(8.4, 0.6, 7.4), dark, 0, 0.3, 0)
   put(f, box(7, 2.6, 6), body, 0, 1.9, -0.2)
@@ -204,6 +206,21 @@ function buildFuse(root) {
     f.add(w)
   }
   settle(root, f)
+  // The ramps again, unbaked and empty: inserted vehicles are parented to these.
+  const show = new Group()
+  show.position.set(x, 0, z)
+  show.rotation.y = yaw
+  for (const a of [-1.3, 0, 1.3]) {
+    const w = new Group()
+    w.rotation.y = a
+    const tray = new Group()
+    tray.position.set(0, 0.95, 5.6)
+    tray.rotation.x = 0.3
+    trays.push(tray)
+    w.add(tray)
+    show.add(w)
+  }
+  root.add(show)
   solidBox(4.2, 3.2, 3.6, x, 3.2, z, yaw)
 
   const r = SET.fuse.ring
@@ -215,7 +232,7 @@ function buildFuse(root) {
   const count = liveLabel('0/3', 2.7, { colors: [['#ffffff', '#dfe6ff']], outline: '#0b1a3a', outlineWidth: 12 })
   count.position.set(x, 9.9, z)
   root.add(title, count)
-  return { ring, cyan, count }
+  return { ring, cyan, count, trays }
 }
 
 // --- ADMIN ABUSE sign -----------------------------------------------------------------
@@ -824,6 +841,7 @@ export function createLobby(scene, fx, sound) {
   })
 
   let hud = null
+  const fuseCars = []
   let humCd = 2
   return {
     updateHp: drawHp,
@@ -832,6 +850,23 @@ export function createLobby(scene, fx, sound) {
     setBoards(data) {
       serverBoards = data
       boards.faces.forEach((f) => f.draw())
+    },
+    // An inserted vehicle drops onto feeder ramp i and stays there until the fuse is done.
+    fuseShow(i, spec) {
+      const tray = fuse.trays[i]
+      if (!tray) return
+      const model = vehicleModel(spec.type, spec.paint)
+      const v = makeVehicle(model, spec.variant && spec.variant !== 'normal' ? variantMaterial(spec.variant) : sharedMaterial())
+      const k = Math.min(0.75, 3.2 / Math.max(model.L, model.hz * 2))
+      v.root.scale.setScalar(k)
+      v.root.rotation.y = Math.PI / 2
+      tray.add(v.root)
+      fuseCars.push({ root: v.root, base: 0.36 + model.cy * k, t: 0 })
+      sound.liftSet(SET.fuse.x, SET.fuse.z)
+    },
+    fuseClear() {
+      for (const c of fuseCars) c.root.removeFromParent()
+      fuseCars.length = 0
     },
     setFuseCount(n) {
       fuse.count.setText(`${n}/${FUSE.slots}`)
@@ -901,6 +936,11 @@ export function createLobby(scene, fx, sound) {
       portal.shards.instanceMatrix.needsUpdate = true
       pink.rotation.z = elapsed * 0.35
       fuse.ring.rotation.z = elapsed * 0.3
+      for (const c of fuseCars) {
+        c.t = Math.min(1, c.t + dt * 1.6)
+        const fall = 1 - c.t
+        c.root.position.y = c.base + fall * fall * 3.2 + Math.abs(Math.sin(c.t * 9)) * 0.35 * fall
+      }
       portal.ring.rotation.z = -elapsed * 0.3
       // The machine's lights breathe, with the odd flicker of a loose contact.
       const pulse = 0.8 + Math.sin(elapsed * 2.2) * 0.2 - (Math.sin(elapsed * 31) > 0.97 ? 0.4 : 0)
