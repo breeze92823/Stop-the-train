@@ -1,4 +1,4 @@
-import { AdditiveBlending, CanvasTexture, Group, Mesh, Sprite, SpriteMaterial, Vector3 } from 'three'
+import { AdditiveBlending, CanvasTexture, Group, Mesh, Quaternion, Sprite, SpriteMaterial, Vector3 } from 'three'
 import { ROUND, TRACK } from './config.js'
 import { RAPIER, bindMesh, onTick, removeBody, unbindMesh, world } from './physics.js'
 import { Kit, SLOT, sharedMaterial } from './vehicles.js'
@@ -10,6 +10,7 @@ import { paintSoftDot } from './textures.js'
 // instant their HP runs out, so the derailment is an actual jackknife. Trains face -X.
 const WHEEL_R = 0.56
 const GAP = 1.1 // m between couplers
+const COUPLER = { massShare: 1 / 8, stiffness: 0.3 } // share of a car's mass felt at a coupler; share of the gap closed per tick
 
 function axleGeometry() {
   const kit = new Kit()
@@ -167,6 +168,26 @@ function modelFor(spec, kind) {
 
 let axleGeo = null
 const out = new Vector3()
+const turn = new Quaternion()
+const armA = new Vector3()
+const armB = new Vector3()
+const velA = new Vector3()
+const velB = new Vector3()
+
+// World point on a car's long axis, `x` from its centre; `arm` receives the offset from the centre.
+function couplerPoint(body, x, arm) {
+  const r = body.rotation()
+  const c = body.translation()
+  arm.set(x, 0, 0).applyQuaternion(turn.set(r.x, r.y, r.z, r.w))
+  return { x: c.x + arm.x, y: c.y + arm.y, z: c.z + arm.z }
+}
+
+// Velocity of the body at centre + arm.
+function pointVelocity(body, arm, out) {
+  const v = body.linvel()
+  const w = body.angvel()
+  return out.set(v.x + w.y * arm.z - w.z * arm.y, v.y + w.z * arm.x - w.x * arm.z, v.z + w.x * arm.y - w.y * arm.x)
+}
 
 export function createTrains(scene, fx, sound, hooks) {
   axleGeo ??= axleGeometry()
@@ -214,7 +235,7 @@ export function createTrains(scene, fx, sound, hooks) {
       at += model.L + GAP
       cars.push(c)
     })
-    t = { spec, cars, head, length: at - head, speed: spec.speed, target: spec.speed, hp, maxHp: spec.hp, state: 'run', timer: 0, joints: [], horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
+    t = { spec, cars, head, length: at - head, speed: spec.speed, target: spec.speed, hp, maxHp: spec.hp, state: 'run', timer: 0, horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
     const loco = cars[0]
     t.smoke = fx.addEmitter({
       rate: 34,
@@ -272,9 +293,35 @@ export function createTrains(scene, fx, sound, hooks) {
     fx.dustRing(p.x, p.z, 1.6, 10)
   }
 
+  // A wreck's cars stay coupled, nose to tail, through an impulse at each coupler that pulls its two
+  // ends together. Not a Rapier joint: 0.14 panics on the step after a body that had one is removed,
+  // however the joint is taken off first, and that kills the world for good.
+  function couple(dt) {
+    for (let i = 0; i < t.cars.length - 1; i++) {
+      const a = t.cars[i].body
+      const b = t.cars[i + 1].body
+      if (a.isSleeping() && b.isSleeping()) continue
+      const pa = couplerPoint(a, t.cars[i].model.L / 2 + GAP / 2, armA)
+      const pb = couplerPoint(b, -t.cars[i + 1].model.L / 2 - GAP / 2, armB)
+      const va = pointVelocity(a, armA, velA)
+      const vb = pointVelocity(b, armB, velB)
+      // A long body turns about its centre, so its end feels about a quarter of its mass; two of them, an eighth.
+      const k = Math.min(a.mass(), b.mass()) * COUPLER.massShare
+      const pull = COUPLER.stiffness / dt
+      const impulse = {
+        x: k * ((pb.x - pa.x) * pull + vb.x - va.x),
+        y: k * ((pb.y - pa.y) * pull + vb.y - va.y),
+        z: k * ((pb.z - pa.z) * pull + vb.z - va.z),
+      }
+      a.applyImpulseAtPoint(impulse, pa, true)
+      b.applyImpulseAtPoint({ x: -impulse.x, y: -impulse.y, z: -impulse.z }, pb, true)
+    }
+  }
+
   function step(dt) {
     if (!t) return
     t.timer += dt
+    if (t.state === 'derail') couple(dt)
     if (t.state !== 'run') return
     const shared = hooks.shared?.()
     // Shared round: the server owns speed, hits and HP; the head only eases toward its last report.
@@ -338,11 +385,6 @@ export function createTrains(scene, fx, sound, hooks) {
       c.body.setAngvel({ x: flip * (i === 0 ? 2.4 : 0.9 + Math.random() * 1.1), y: flip * (i === 0 ? 1.1 : 0.7 + Math.random() * 0.7), z: i === 0 ? -0.65 : (Math.random() - 0.5) * 0.7 }, true)
       c.body.setLinearDamping(0.08)
       c.body.setAngularDamping(0.25)
-      if (i < t.cars.length - 1) {
-        const n = t.cars[i + 1]
-        const data = RAPIER.JointData.spherical({ x: c.model.L / 2 + GAP / 2, y: 0, z: 0 }, { x: -n.model.L / 2 - GAP / 2, y: 0, z: 0 })
-        t.joints.push(world.createImpulseJoint(data, c.body, n.body, true))
-      }
     })
     const loco = t.cars[0]
     const nose = loco.group.position.x - loco.model.L / 2
@@ -370,27 +412,8 @@ export function createTrains(scene, fx, sound, hooks) {
   }
 
   function clear(dust) {
-    // Pulling bodies out of the world mid-wreck panics Rapier (the joints and contacts still point at
-    // them), so they are switched off now and removed once the world has stepped without them.
-    // The coupling joints go first, while both of their bodies are still alive: disabling or removing
-    // a body that still owns a joint is what trips Rapier's `unreachable`.
-    const bodies = t.cars.map((c) => c.body)
-    for (const j of t.joints) world.removeImpulseJoint(j, false)
-    t.joints.length = 0
-    for (const b of bodies) {
-      b.setLinvel({ x: 0, y: 0, z: 0 }, false)
-      b.setAngvel({ x: 0, y: 0, z: 0 }, false)
-      b.setEnabled(false)
-    }
-    setTimeout(() => {
-      for (const b of bodies) {
-        if (!world.getRigidBody(b.handle)) continue
-        // Rapier 0.14 hits `unreachable` on the next step if a disabled body is removed.
-        b.setEnabled(true)
-        removeBody(b)
-      }
-    }, 250)
     for (const c of t.cars) {
+      removeBody(c.body)
       if (c.burning) fx.removeEmitter(c.burning)
       if (dust) {
         fx.smokeBurst(c.group.position.x, 1.5, c.group.position.z, 16, 3.6, 'dust')
