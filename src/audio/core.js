@@ -12,6 +12,7 @@
 // cliffs and stalls) and a short, darkening tail, so one-shots sit in the beach
 // instead of sounding pasted on top of it.
 import { AUDIO, COARSE_POINTER } from '../config.js'
+import { onChange, setMutedPref } from '../progress.js'
 
 export const A = {
   ctx: null,
@@ -34,14 +35,15 @@ export function onStart(fn) {
   else startHooks.push(fn)
 }
 
-// --- Volume + mute (persisted) ---------------------------------------------------
+// --- Volume + mute (mute is saved with the account) ---------------------------------------------------
 let volume = AUDIO.volume
 let muted = false
-try {
-  muted = localStorage.getItem(AUDIO.storageKey) === 'muted'
-} catch {
-  // Storage blocked: unmuted.
-}
+let pref = false // the saved choice (progress.js, stored by the backend)
+onChange((s) => {
+  if (s.muted === pref) return
+  pref = muted = s.muted
+  applyLevel()
+})
 const level = () => (muted ? 0 : volume * volume) // perceptual: the slider feels even
 function applyLevel(t = 0.05) {
   if (A.master) A.master.gain.setTargetAtTime(level(), A.ctx.currentTime, t)
@@ -51,12 +53,12 @@ export function setVolume(v) {
   applyLevel()
 }
 export const isMuted = () => muted
-export function setMuted(on) {
+// remember = false for a temporary mute (ad breaks): not saved.
+export function setMuted(on, remember = true) {
   muted = !!on
-  try {
-    localStorage.setItem(AUDIO.storageKey, muted ? 'muted' : 'on')
-  } catch {
-    // Storage blocked: this session only.
+  if (remember) {
+    pref = muted
+    setMutedPref(muted)
   }
   applyLevel()
 }

@@ -3,19 +3,20 @@
 // `noProgress` (new account, guest or no database: the local state becomes the first save) or
 // `serverError` (the save could not be read: never overwrite it). From then on the whole snapshot is
 // sent as `saveProgress` whenever it changed, at most every NET.saveEvery s, and when the tab hides.
-// Guests are never saved by the server; their progress stays in the localStorage cache (progress.js).
+// Guests are never saved by the server; their progress lives in memory for the session only (nothing is stored in the browser).
 // The room also relays presence (pose, held vehicle, bench, emote, Bloxity look) to everyone else,
 // the top lists for the lobby boards, and rewarded-ad verification.
 // Never throws and never blocks play: with no server the game runs on the local save and keeps trying.
 import { Client } from '@colyseus/sdk'
-import { DEV_MODE, NET, SERVER_URL } from './config.js'
+import { DEFAULT_WORLD, DEV_MODE, NET, SERVER_URL } from './config.js'
 import * as bloxity from './bloxity.js'
-import { hydrate, onSave, reset, setOwner, snapshot, state as progress } from './progress.js'
+import { hydrate, onSave, reset, setChestPlay, snapshot, state as progress, tickChestPlay, touchSeen } from './progress.js'
 
 export const net = {
   room: null,
   connected: false,
   hydrated: false, // a progress/noProgress answer arrived: saving is allowed
+  world: DEFAULT_WORLD, // the world this tab is in: only its round and its players are drawn
   boards: null, // { boards: { stat: [{ name, value }] }, ranks: { stat: n | null } } from the server
   get sessionId() {
     return this.room?.sessionId ?? null
@@ -24,20 +25,11 @@ export const net = {
 
 // --- Identity ----------------------------------------------------------------
 // Signed-in players use their Bloxity id and token (the server verifies it); everyone else a
-// per-browser guest id (never saved). Dev mode (no SDK) plays as a per-browser dev id, so a local
+// guest id per page load (never saved). Dev mode (no SDK) plays as one fixed dev id, so a local
 // server with Mongo keeps its progress across reloads.
-function storedId(key, make) {
-  try {
-    let id = localStorage.getItem(key)
-    if (!id) localStorage.setItem(key, (id = make()))
-    return id
-  } catch {
-    return make()
-  }
-}
 const rand = () => Math.random().toString(36).slice(2, 8)
-const GUEST = storedId('stop-the-train.guest', () => `guest-${rand()}`)
-const DEV = DEV_MODE ? storedId('stop-the-train.dev', () => `dev-${rand()}`) : ''
+const GUEST = `guest-${rand()}` // per page load
+const DEV = DEV_MODE ? 'dev-local' : ''
 
 function identity() {
   if (DEV) return { userId: DEV, username: `Dev ${DEV.slice(4)}`, token: '' }
@@ -87,6 +79,19 @@ export function sendNet(type, payload) {
   return true
 }
 
+// --- Worlds -------------------------------------------------------------------
+// The server keeps a player in the main world until told otherwise, so this is sent on every travel and
+// again once a (re)joined room has read the save. The save goes first: an account's rebirths are judged by it.
+function syncWorld() {
+  if (!net.hydrated) return
+  saveNow()
+  send('setWorld', { world: net.world, rebirths: progress.rebirths })
+}
+export function sendWorld(id) {
+  net.world = id
+  syncWorld()
+}
+
 // --- Leaderboards -------------------------------------------------------------
 const boardListeners = new Set()
 export const onBoards = (fn) => {
@@ -110,6 +115,24 @@ export async function requestAdReward(placement) {
     }
     adWait = { placement, finish }
     send('adReward', { token: ad.token, placement })
+  })
+}
+
+// --- Free coins chest ---------------------------------------------------------------------
+// The server counts the play time (only while this tab is visible) and decides the claim: `chest { play }`
+// is its count, `claimChest` asks for the coins and `chestResult { ok, play }` answers. The client grants them.
+let chestWait = null
+export function claimChestOnServer() {
+  if (!net.connected) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => finish(false), 8000)
+    const finish = (ok) => {
+      clearTimeout(timer)
+      chestWait = null
+      resolve(ok)
+    }
+    chestWait = finish
+    send('claimChest')
   })
 }
 
@@ -149,13 +172,15 @@ export function sendPose(pose) {
   send('pose', pose)
 }
 let carryKey = ''
-// The vehicle held overhead ({ type, paint, variant }) or null: sent when it changes.
-export function sendCarry(spec) {
-  const key = spec ? `${spec.type}|${spec.paint}|${spec.variant}` : ''
-  presence.carry = spec
+const carryKeyOf = (specs) => (specs ? specs.map((s) => `${s.type}|${s.paint}|${s.variant}`).join(',') : '')
+// The vehicles held in the hands, bottom first ([{ type, paint, variant }]) or null: sent when they change.
+// `spec` (the bottom one) is kept for a server that only knows one.
+export function sendCarry(specs) {
+  const key = carryKeyOf(specs)
+  presence.carry = specs
   if (!net.connected || key === carryKey) return
   carryKey = key
-  send('carry', { spec })
+  send('carry', { spec: specs?.[0] ?? null, specs })
 }
 let trainKey = ''
 let trainAt = 0
@@ -196,23 +221,23 @@ function attach(room) {
     lastSaved = ''
     // A reconnect under the same identity: this tab is newer than the save (it may hold changes
     // not sent yet), so push it rather than load over it.
-    if (loadedId === sentId || !doc) return saveNow()
-    loadedId = sentId
-    const gained = hydrate(doc)
-    setOwner(sentId)
-    welcome?.(gained)
+    if (loadedId !== sentId && doc) {
+      loadedId = sentId
+      const report = hydrate(doc)
+      if (report) welcome?.(report)
+    }
     saveNow() // fills in whatever an older save lacked; a no-op send of the same values otherwise
+    if (net.world !== DEFAULT_WORLD) syncWorld()
   })
   room.onMessage('noProgress', () => {
     // New account, guest or no database. A guest's local play carries over to the new account;
     // another account's cache does not.
     net.hydrated = true
     lastSaved = ''
-    const owner = progress.owner
-    if (owner && owner !== sentId && !owner.startsWith('guest-')) reset()
+    if (loadedId && loadedId !== sentId && !loadedId.startsWith('guest-')) reset()
     loadedId = sentId
-    setOwner(sentId)
     saveNow()
+    if (net.world !== DEFAULT_WORLD) syncWorld()
   })
   room.onMessage('serverError', () => {
     // The save exists but could not be read: never overwrite it.
@@ -223,6 +248,14 @@ function attach(room) {
     net.boards = data
     for (const fn of boardListeners) fn(data)
   })
+  room.onMessage('chest', (m) => {
+    if (typeof m?.play === 'number') setChestPlay(m.play)
+  })
+  room.onMessage('chestResult', (m) => {
+    if (typeof m?.play === 'number') setChestPlay(m.play)
+    chestWait?.(!!m?.ok)
+  })
+  sendVisible()
   room.onMessage('adResult', (m) => {
     if (adWait && (!m?.placement || m.placement === adWait.placement)) adWait.finish(!!m?.ok)
   })
@@ -272,18 +305,18 @@ async function connect() {
     const id = identity()
     sentId = id.userId
     sentAvatar = avatarJson()
-    carryKey = presence.carry ? `${presence.carry.type}|${presence.carry.paint}|${presence.carry.variant}` : ''
+    carryKey = carryKeyOf(presence.carry)
     trainKey = ''
     poseKey = ''
     const options = { ...id, pfp: bloxity.getPfp(), avatar: sentAvatar, pose: presence.pose }
     const { room, relay } = (await joinLaunchRoom(options)) ?? (await joinAnyRoom(options))
     retryIn = NET.retry
     attach(room)
-    if (presence.carry) send('carry', { spec: presence.carry })
+    if (presence.carry) send('carry', { spec: presence.carry[0], specs: presence.carry })
     // relay~room lets an invited friend join this exact room through its pod's relay (bloxity.js locateRoom).
     bloxity.updateRoom(relay ? `${relay}~${room.roomId}` : room.roomId)
   } catch (err) {
-    console.info(`[net] could not reach the server (retrying in ${retryIn}s); progress is saved on this device only`, err?.message ?? err)
+    console.info(`[net] could not reach the server (retrying in ${retryIn}s); progress is not saved until the server is reachable`, err?.message ?? err)
     setTimeout(connect, retryIn * 1000)
     retryIn = Math.min(retryIn * 2, NET.retryMax)
   } finally {
@@ -295,9 +328,13 @@ async function connect() {
 setInterval(() => {
   if (document.hidden) return
   playtime += 1
+  if (playtime % 30 === 0) touchSeen() // "last seen" follows the open tab, so only real absences pay
+  tickChestPlay(1) // keeps the countdown moving between the server's `chest` updates (and offline)
 }, 1000)
+// The server stops counting chest time while the tab is hidden.
+const sendVisible = () => send('visible', { on: !document.hidden })
 
-// opts.onWelcome(gainedPower): a server save loaded (the offline credit banner).
+// opts.onWelcome(report): a server save loaded and Strength was earned while away (the WELCOME BACK window).
 export function initNet(opts = {}) {
   welcome = opts.onWelcome ?? null
   // A change worth saving: sent at most every NET.saveEvery s.
@@ -310,7 +347,7 @@ export function initNet(opts = {}) {
       saveNow()
     }, wait)
   })
-  if (!hasServer()) return console.info('[net] no server configured; progress is saved on this device only')
+  if (!hasServer()) return console.info('[net] no server configured; progress is not saved')
   // The first ready call connects; later ones are sign-in / sign-out.
   bloxity.subscribeAuth((s) => {
     if (!s.ready) return
@@ -324,5 +361,8 @@ export function initNet(opts = {}) {
     send('identify', { ...id, pfp: bloxity.getPfp() })
   })
   window.addEventListener('pagehide', saveNow)
-  document.addEventListener('visibilitychange', () => document.hidden && saveNow())
+  document.addEventListener('visibilitychange', () => {
+    sendVisible()
+    if (document.hidden) saveNow()
+  })
 }

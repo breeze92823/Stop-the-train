@@ -1,8 +1,8 @@
-import { DAILY, FREE_COINS, PROGRESS, REBIRTH, UPGRADES } from './config.js'
+import { DAILY, FREE_COINS, GYM, PROGRESS, REBIRTH, SHOP, UPGRADES } from './config.js'
 
 // The player's numbers. Signed-in players are saved by the backend (net.js: snapshot() goes out,
-// hydrate() takes the server's save); localStorage is the cache for guests and for a session
-// that cannot reach the server. power is the Strength stat: it decides which vehicles can be lifted.
+// hydrate() takes the server's save). Nothing is stored in the browser: guests and offline play
+// live in memory for the session only. power is the Strength stat: it decides which vehicles can be lifted.
 const now = () => Date.now() / 1000
 
 export const state = {
@@ -10,26 +10,28 @@ export const state = {
   levels: {},
   breaks: 0, // trains derailed
   robux: 0,
+  strength: 0, // highest Strength ever reached (Strength resets on rebirth; the leaderboard ranks this)
   dailyAt: 0, // unix s of the last claim
   dailyDay: 0, // days claimed in this 7 day cycle
   powerMult: 1, // permanent multiplier on every rep (the Day 7 reward)
-  chestAt: 0, // unix s the free coins chest was last opened
+  chestPlay: 0, // s played toward the free coins chest (the server's count; not part of the save)
   updateEnds: 0, // unix s the NEW UPDATE sign reaches zero
   lastSeen: 0,
   seeded: false, // the first lobby's vehicles have been parked
-  owner: '', // whose save the local cache holds ('' = a guest / unknown)
+  muted: false, // sound switched off (saved with the account)
 }
 
 // The fields the backend stores (its sanitize.ts): the whole save, sent as one snapshot.
-const SAVED = ['power', 'coins', 'luck', 'multiplier', 'rebirths', 'levels', 'breaks', 'robux', 'dailyAt', 'dailyDay', 'powerMult', 'chestAt', 'updateEnds', 'seeded', 'lastSeen']
+const SAVED = ['power', 'coins', 'luck', 'multiplier', 'rebirths', 'levels', 'breaks', 'robux', 'strength', 'dailyAt', 'dailyDay', 'powerMult', 'updateEnds', 'seeded', 'lastSeen', 'muted']
 export const snapshot = () => {
   const out = {}
+  state.strength = Math.max(state.strength, state.power)
   for (const k of SAVED) out[k] = k === 'levels' ? { ...state.levels } : state[k]
   return out
 }
 // A new player's state (also what a different account starts from).
 export function reset() {
-  Object.assign(state, { ...PROGRESS.start, levels: {}, breaks: 0, robux: 0, dailyAt: 0, dailyDay: 0, powerMult: 1, chestAt: 0, updateEnds: 0, lastSeen: 0, seeded: false })
+  Object.assign(state, { ...PROGRESS.start, levels: {}, breaks: 0, robux: 0, strength: 0, dailyAt: 0, dailyDay: 0, powerMult: 1, chestPlay: 0, updateEnds: 0, lastSeen: 0, seeded: false, muted: false })
   state.updateEnds = now() + PROGRESS.updateCountdown
 }
 // The server's save over the local state. Anything it lacks stays a new player's value.
@@ -38,23 +40,36 @@ export function hydrate(doc) {
   for (const k of SAVED) if (doc[k] !== undefined && doc[k] !== null) state[k] = k === 'levels' ? { ...doc[k] } : doc[k]
   if (!state.updateEnds || state.updateEnds < now()) state.updateEnds = now() + PROGRESS.updateCountdown
   state.rebirths = Math.max(state.rebirths, state.multiplier - 1)
-  const gained = offlineCredit()
-  writeLocal()
+  state.strength = Math.max(state.strength, state.power)
+  const report = offlineCredit(doc.serverTime)
   emit()
-  return gained
+  return report
 }
-// Strength earned while away, from the last save's timestamp.
-function offlineCredit() {
-  if (state.lastSeen <= 0) return 0
-  const hours = Math.min(PROGRESS.offlineCapHours, Math.max(0, (now() - state.lastSeen) / 3600))
+// Strength earned while away, from the last save's timestamp. Returns the report for the
+// WELCOME BACK window, or null when nothing was earned.
+// lastSeen is epoch ms (the backend stamps it when the player really leaves); older saves held seconds.
+// The server's clock is used for "now" so a wrong local clock cannot change the pay.
+function offlineCredit(serverTime) {
+  if (state.lastSeen <= 0) return null
+  if (state.lastSeen < 1e11) state.lastSeen *= 1000
+  const nowMs = Number.isFinite(serverTime) ? serverTime : Date.now()
+  const away = Math.max(0, (nowMs - state.lastSeen) / 1000)
+  const hours = Math.min(PROGRESS.offlineCapHours, away / 3600)
   const gained = Math.floor(state.power * PROGRESS.offlineRatePerHour * hours)
+  state.lastSeen = nowMs
+  if (away < PROGRESS.offlineMinSeconds || gained <= 0) return null
   state.power += gained
-  state.lastSeen = now()
-  return gained
+  state.strength = Math.max(state.strength, state.power)
+  return { gained, away, capped: away / 3600 >= PROGRESS.offlineCapHours, capHours: PROGRESS.offlineCapHours, perHour: Math.floor(state.power * PROGRESS.offlineRatePerHour) }
 }
-export function setOwner(id) {
-  state.owner = id
-  writeLocal()
+// While the game is open lastSeen keeps moving, so only time actually spent away is paid.
+export function touchSeen() {
+  save()
+}
+export function setMutedPref(on) {
+  state.muted = !!on
+  save()
+  emit()
 }
 
 const listeners = new Set()
@@ -67,39 +82,22 @@ const emit = () => {
 }
 
 function save() {
-  state.lastSeen = now()
-  writeLocal()
+  state.lastSeen = Date.now()
   for (const fn of saveListeners) fn()
 }
 // net.js: something worth sending changed.
 const saveListeners = new Set()
 export const onSave = (fn) => saveListeners.add(fn)
 
-function writeLocal() {
-  try {
-    localStorage.setItem(PROGRESS.storageKey, JSON.stringify(state))
-  } catch {
-    // Storage blocked: this session only.
-  }
-}
-
-// Reads the save and credits offline strength; returns the strength earned while away.
+// Fresh session state; the server's save replaces it once it answers (net.js hydrate()).
 export function loadProgress() {
-  let gained = 0
-  try {
-    const raw = localStorage.getItem(PROGRESS.storageKey)
-    if (raw) Object.assign(state, JSON.parse(raw))
-  } catch {
-    // Corrupt or blocked: start fresh.
-  }
   // Saves from before rebirths counted: the multiplier always was 1 + rebirths.
   state.rebirths = Math.max(state.rebirths, state.multiplier - 1)
   const t = now()
-  gained = offlineCredit()
   if (!state.updateEnds) state.updateEnds = t + PROGRESS.updateCountdown
   save()
   emit()
-  return gained
+  return null
 }
 
 export function addCoins(n) {
@@ -111,6 +109,7 @@ export function addCoins(n) {
 let lastSave = 0
 export function addPower(n) {
   state.power += n
+  if (state.power > state.strength) state.strength = state.power
   const t = now()
   if (t - lastSave > PROGRESS.saveEvery) {
     lastSave = t
@@ -125,21 +124,25 @@ export const addBreak = () => {
   emit()
 }
 
-export const chestLeft = () => Math.max(0, state.chestAt + FREE_COINS.cooldown * (1 - upgradeValue('cooldown') / 100) - now())
-// A verified rewarded ad refills the chest at once.
-export function refillChest() {
-  state.chestAt = 0
-  save()
-  emit()
+// Seconds of play still needed for the chest. The server counts them (net.js sets chestPlay from its
+// `chest` messages); the client only keeps the clock running between those, and alone when offline.
+export const chestLeft = () => Math.max(0, FREE_COINS.playSeconds - state.chestPlay)
+export const setChestPlay = (s) => {
+  state.chestPlay = Math.min(FREE_COINS.playSeconds, Math.max(0, s))
 }
-export function claimChest() {
-  if (chestLeft() > 0) return 0
-  const coins = FREE_COINS.value * state.multiplier
-  state.coins += coins
-  state.chestAt = now()
+export const tickChestPlay = (dt) => setChestPlay(state.chestPlay + dt)
+// A verified rewarded ad fills the chest at once.
+export function refillChest() {
+  state.chestPlay = FREE_COINS.playSeconds
+}
+// Pays the chest. Online the server has already approved it (net.js claimChestOnServer) and `force` is set.
+export function claimChest(force = false) {
+  if (!force && chestLeft() > 0) return 0
+  state.coins += FREE_COINS.value
+  state.chestPlay = 0
   save()
   emit()
-  return coins
+  return FREE_COINS.value
 }
 
 export function spendCoins(n) {
@@ -178,10 +181,37 @@ export function buyUpgrade(id) {
   return true
 }
 
+// Store buys: one-time, paid in coins, saved as levels[id] = 1 (ids: power2, admin).
+export const owns = (id) => (state.levels[id] ?? 0) > 0
+export const shopPrice = (id) => (id === 'admin' ? GYM.benches.find((b) => b.id === 'admin').coins : SHOP[id].coins)
+export const powerBoost = () => (owns('power2') ? SHOP.power2.mult : 1)
+export function buyShop(id) {
+  const price = shopPrice(id)
+  if (owns(id) || state.coins < price) return false
+  state.coins -= price
+  state.levels[id] = 1
+  save()
+  emit()
+  return true
+}
+
 export const rebirthCost = () => Math.round(REBIRTH.base * REBIRTH.grow ** (state.rebirths - PROGRESS.start.rebirths))
 export function rebirth() {
   if (state.power < rebirthCost()) return false
+  state.strength = Math.max(state.strength, state.power)
   state.power = REBIRTH.startPower
+  state.rebirths += 1
+  state.multiplier += 1
+  state.luck += REBIRTH.luck
+  save()
+  emit()
+  return true
+}
+
+// A rebirth that keeps the Strength: it still needs the full Strength and costs REBIRTH.skipCoins.
+export function skipRebirth() {
+  if (state.power < rebirthCost() || state.coins < REBIRTH.skipCoins) return false
+  state.coins -= REBIRTH.skipCoins
   state.rebirths += 1
   state.multiplier += 1
   state.luck += REBIRTH.luck
@@ -211,7 +241,6 @@ export function claimDaily() {
   return g
 }
 
-export const updateLeft = () => Math.max(0, state.updateEnds - now())
 
 // 1920 -> 1.92K, 57000000 -> 57M
 export function compact(n) {

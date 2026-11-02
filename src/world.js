@@ -1,5 +1,8 @@
 import {
   CanvasTexture,
+  DodecahedronGeometry,
+  DoubleSide,
+  Euler,
   Group,
   IcosahedronGeometry,
   InstancedMesh,
@@ -11,13 +14,19 @@ import {
   MeshStandardMaterial,
   NearestFilter,
   PlaneGeometry,
+  Quaternion,
+  RingGeometry,
+  SphereGeometry,
+  SRGBColorSpace,
   Vector2,
+  Vector3,
 } from 'three'
 import { GYM, LOBBY, SET, TRACK, YARD } from './config.js'
 import { RAPIER, addFixed } from './physics.js'
 import { bake } from './bake.js'
 import { buildVoxels } from './voxels.js'
-import { mulberry32, paintLego, paintTerrace, toTexture } from './textures.js'
+import { mulberry32, paintLego, paintPlanet, paintTerrace, toTexture } from './textures.js'
+import { onTheme, themeColors, themeMaterial } from './theme.js'
 
 // The ground of the lobby: the studded lawn, the checkered terraces walling it in,
 // the two purple tunnel mountains the railway runs through, the rails, the spawn
@@ -36,6 +45,10 @@ function legoMaterials() {
   const sideMap = toTexture(terrace.color, { repeat: 1 / 6, srgb: true })
   // A touch of self-light: walls facing away from the sun stay as warm as the reference's.
   legoTex.side = new MeshLambertMaterial({ map: sideMap, emissive: '#ffffff', emissiveMap: sideMap, emissiveIntensity: 0.3 })
+  themeMaterial(legoTex.side, 'terraceWall', (look) => {
+    const map = toTexture(paintTerrace(look).color, { repeat: 1 / 6, srgb: true })
+    return { map, emissiveMap: map }
+  })
   // Bands of the terrace use the plain top material: their tint comes from vertex colours.
   return legoTex
 }
@@ -96,7 +109,7 @@ function buildTerraces(root, mats) {
       return { mat: 0, color: n > 0.5 ? '#35c95f' : '#2fbd56' }
     },
   })
-  const t = new Mesh(tops, mats.top)
+  const t = new Mesh(themeColors(tops, 'terraceTop'), mats.top)
   const s = new Mesh(sides, mats.side)
   t.receiveShadow = s.receiveShadow = true
   root.add(t, s)
@@ -148,7 +161,7 @@ function buildMountain(root, mats, sign) {
       return { mat: 0, color: shade > 0.5 ? '#6a62d6' : '#5f57c9' }
     },
   })
-  const m = new Mesh(geo, mats.top)
+  const m = new Mesh(themeColors(geo, 'mountain'), mats.top)
   m.castShadow = m.receiveShadow = true
   root.add(m)
   const floor = new Mesh(new PlaneGeometry(depth, 11), new MeshBasicMaterial({ color: '#06060c' }))
@@ -166,7 +179,7 @@ function buildMountain(root, mats, sign) {
 function buildTrack(root) {
   const count = Math.ceil((TRACK.end * 2) / TRACK.tieEvery)
   const tieGeo = new BoxGeometry(0.62, 0.16, TRACK.tieLength)
-  const tieMat = new MeshStandardMaterial({ roughness: 0.8, color: '#ffffff' })
+  const tieMat = themeMaterial(new MeshStandardMaterial({ roughness: 0.8, color: '#ffffff' }), 'ties')
   const ties = new InstancedMesh(tieGeo, tieMat, count)
   const rand = mulberry32(5)
   const m = new Matrix4()
@@ -220,17 +233,21 @@ function flat(root, w, d, x, z, mat, y = 0.012, yaw = 0) {
   return m
 }
 
-function buildChevrons(root) {
-  const { x, zFrom, zTo, count } = SET.chevrons
-  const tex = decalTexture((ctx, w, h) => {
+function chevronTexture(color) {
+  return decalTexture((ctx) => {
     // Pixel-stepped arrow pointing up the canvas (north).
-    ctx.fillStyle = '#04572c'
+    ctx.fillStyle = color
     for (let i = 0; i < 7; i++) {
       ctx.fillRect(14 - i * 2, 4 + i * 2, 4, 6)
       ctx.fillRect(14 + i * 2, 4 + i * 2, 4, 6)
     }
   }, 32, 32)
-  const mat = new MeshLambertMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })
+}
+
+function buildChevrons(root) {
+  const { x, zFrom, zTo, count } = SET.chevrons
+  const mat = new MeshLambertMaterial({ map: chevronTexture('#04572c'), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })
+  themeMaterial(mat, 'chevron', (look) => ({ map: chevronTexture(look.arrow) }))
   for (let i = 0; i < count; i++) {
     const t = count > 1 ? i / (count - 1) : 0
     flat(root, 6, 6, x, zFrom + (zTo - zFrom) * t, mat)
@@ -255,7 +272,7 @@ export function dashedRect(root, x0, z0, x1, z1, mat, opts = {}) {
 
 function buildYardMarkings(root) {
   const white = new MeshBasicMaterial({ color: '#ffffff', polygonOffset: true, polygonOffsetFactor: -2 })
-  const black = new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 })
+  const black = themeMaterial(new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 }), 'bayLine')
   const b = YARD.border
   dashedRect(root, b.x0, b.z0, b.x1, b.z1, white, { dash: 1.8, gap: 1.3, width: 0.3 })
   const { width: W, length: L, line } = YARD.bay
@@ -272,7 +289,7 @@ function buildYardMarkings(root) {
 
 function buildGymMarkings(root) {
   const white = new MeshBasicMaterial({ color: '#ffffff', polygonOffset: true, polygonOffsetFactor: -2 })
-  const black = new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 })
+  const black = themeMaterial(new MeshBasicMaterial({ color: '#0a0a0c', polygonOffset: true, polygonOffsetFactor: -2 }), 'bayLine')
   const b = GYM.border
   dashedRect(root, b.x0, b.z0, b.x1, b.z1, white, { dash: 1.8, gap: 1.3, width: 0.3 })
   const { width: W, length: L, line } = GYM.bay
@@ -343,6 +360,10 @@ export function buildGround(root) {
   const colorMap = toTexture(lawn.color, { repeat: rep, srgb: true, anisotropy: 16 })
   const normalMap = toTexture(lawn.normal, { repeat: rep, anisotropy: 16 })
   const ground = new Mesh(new PlaneGeometry(size, size), new MeshLambertMaterial({ map: colorMap, normalMap, normalScale: new Vector2(0.8, 0.8) }))
+  themeMaterial(ground.material, 'lawn', ({ a, b }) => {
+    const studs = paintLego({ a, b, size: 512, perCell: 4, strength: 2.2, ring: 0.22, lit: 0.22 })
+    return { map: toTexture(studs.color, { repeat: rep, srgb: true, anisotropy: 16 }), normalMap: toTexture(studs.normal, { repeat: rep, anisotropy: 16 }) }
+  })
   ground.rotation.x = -Math.PI / 2
   ground.receiveShadow = true
   root.add(ground)
@@ -407,7 +428,70 @@ function makeClouds() {
   return group
 }
 
+// What hangs over the Galaxy: lit planets, and a belt of rocks turning slowly round the whole map.
+function makeSpace({ planets, belt }) {
+  const group = new Group()
+  const sphere = new SphereGeometry(1, 40, 24)
+  const turning = []
+  for (const p of planets) {
+    const map = new CanvasTexture(paintPlanet(p.bands, p.seed))
+    map.colorSpace = SRGBColorSpace
+    const planet = new Mesh(sphere, new MeshLambertMaterial({ map, emissive: '#ffffff', emissiveMap: map, emissiveIntensity: 0.34, fog: false }))
+    planet.scale.setScalar(p.r)
+    planet.position.set(p.x, p.y, p.z)
+    planet.rotation.z = p.tilt
+    group.add(planet)
+    turning.push(planet)
+    if (p.ring) {
+      const ring = new Mesh(new RingGeometry(p.r * p.ring.inner, p.r * p.ring.outer, 96), new MeshBasicMaterial({ color: p.ring.color, transparent: true, opacity: 0.5, side: DoubleSide, depthWrite: false, fog: false }))
+      ring.position.copy(planet.position)
+      ring.rotation.set(p.ring.tiltX, p.ring.tiltY, 0)
+      group.add(ring)
+    }
+  }
+  const rand = mulberry32(3)
+  const rock = new MeshLambertMaterial({ color: belt.color, fog: false })
+  const rocks = new InstancedMesh(new DodecahedronGeometry(1, 0), rock, belt.count)
+  rocks.frustumCulled = false
+  const m = new Matrix4()
+  const q = new Quaternion()
+  const e = new Euler()
+  const at = new Vector3()
+  const size = new Vector3()
+  for (let i = 0; i < belt.count; i++) {
+    const a = rand() * Math.PI * 2
+    const r = belt.inner + rand() * (belt.outer - belt.inner)
+    at.set(Math.cos(a) * r, belt.low + rand() * (belt.high - belt.low), Math.sin(a) * r)
+    const s = belt.size[0] + rand() * (belt.size[1] - belt.size[0])
+    size.set(s, s * (0.6 + rand() * 0.4), s * (0.7 + rand() * 0.5))
+    m.compose(at, q.setFromEuler(e.set(rand() * 6, rand() * 6, rand() * 6)), size)
+    rocks.setMatrixAt(i, m)
+  }
+  group.add(rocks)
+  return {
+    group,
+    update(dt) {
+      rocks.rotation.y += belt.spin * dt
+      for (const planet of turning) planet.rotation.y += 0.02 * dt
+    },
+  }
+}
+
 export function createWorld(scene) {
-  scene.add(makeClouds())
-  return { update() {} }
+  const clouds = makeClouds()
+  scene.add(clouds)
+  let space = null
+  onTheme((world) => {
+    clouds.visible = world.clouds
+    if (world.planets && !space) {
+      space = makeSpace(world)
+      scene.add(space.group)
+    }
+    if (space) space.group.visible = !!world.planets
+  })
+  return {
+    update(dt) {
+      if (space?.group.visible) space.update(dt)
+    },
+  }
 }

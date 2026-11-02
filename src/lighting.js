@@ -2,23 +2,26 @@ import {
   AdditiveBlending,
   BackSide,
   BufferGeometry,
+  CanvasTexture,
   Color,
   DirectionalLight,
   Float32BufferAttribute,
   Fog,
   HemisphereLight,
+  LinearFilter,
   Mesh,
   PMREMGenerator,
   PointLight,
   Points,
   PointsMaterial,
+  RepeatWrapping,
   Scene,
   ShaderMaterial,
   SphereGeometry,
   Vector3,
 } from 'three'
 import { FOG, LIGHT, TIME_OF_DAY } from './config.js'
-import { mulberry32 } from './textures.js'
+import { mulberry32, paintNebula } from './textures.js'
 
 // All scene lighting, blended between two moods (TIME_OF_DAY.day / .night):
 //  - a gradient sky shader with a sun/moon disc and glow
@@ -43,11 +46,18 @@ const skyFragment = /* glsl */ `
   uniform vec3 bottom;
   uniform vec3 sunDir;
   uniform vec3 sunColor;
+  uniform sampler2D nebulaMap;
+  uniform float nebula;
   varying vec3 vDir;
   void main() {
     float h = vDir.y;
     vec3 col = mix(bottom, top, smoothstep(-0.05, 0.55, h));
-    float d = max(dot(normalize(vDir), sunDir), 0.0);
+    vec3 n = normalize(vDir);
+    if (nebula > 0.0) {
+      vec2 uv = vec2(atan(n.z, n.x) / 6.2831853 + 0.5, asin(clamp(n.y, -1.0, 1.0)) / 3.1415927 + 0.5);
+      col += texture2D(nebulaMap, uv).rgb * nebula;
+    }
+    float d = max(dot(n, sunDir), 0.0);
     col += sunColor * (pow(d, 900.0) * 6.0 + pow(d, 24.0) * 0.25); // disc + halo
     col = mix(col, bottom * 0.85, smoothstep(0.0, -0.25, h));      // darker below the horizon
     gl_FragColor = vec4(col, 1.0);
@@ -76,6 +86,15 @@ function makeStars(count = 1400) {
   return stars
 }
 
+// No mipmaps: the sky's seam would show as a line where the map's u wraps.
+function nebulaTexture(cfg) {
+  const t = new CanvasTexture(paintNebula(cfg))
+  t.wrapS = RepeatWrapping
+  t.generateMipmaps = false
+  t.minFilter = LinearFilter
+  return t
+}
+
 export function createLighting(scene, renderer, preset) {
   // The two moods in use: TIME_OF_DAY, or a world's own sky (setMoods).
   let D = TIME_OF_DAY.day
@@ -91,6 +110,8 @@ export function createLighting(scene, renderer, preset) {
       bottom: { value: new Color(D.horizon) },
       sunDir: { value: new Vector3(0, 1, 0) },
       sunColor: { value: new Color(D.sunColor) },
+      nebulaMap: { value: null },
+      nebula: { value: 0 },
     },
     vertexShader: skyVertex,
     fragmentShader: skyFragment,
@@ -163,6 +184,7 @@ export function createLighting(scene, renderer, preset) {
     scene.environmentIntensity = lerp(D.envIntensity, N.envIntensity, t)
     renderer.toneMappingExposure = lerp(D.exposure, N.exposure, t)
     stars.material.opacity = lerp(D.stars, N.stars, t)
+    skyMaterial.uniforms.nebula.value = lerp(D.nebula ?? 0, N.nebula ?? 0, t)
     // Sun and moon are different directions: slerp-ish via normalised lerp of the two.
     sunDirection(D.sunElevation, D.sunAzimuth, tmpA)
     sunDirection(N.sunElevation, N.sunAzimuth, tmpB)
@@ -187,6 +209,7 @@ export function createLighting(scene, renderer, preset) {
       if (sky.day === D && sky.night === N) return
       D = sky.day
       N = sky.night
+      if (sky.nebula) skyMaterial.uniforms.nebulaMap.value ??= nebulaTexture(sky.nebula)
       apply()
       bakeEnvironment(night)
     },

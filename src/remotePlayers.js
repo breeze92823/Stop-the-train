@@ -1,4 +1,5 @@
-// The other players in the room, drawn in the world: their Bloxity look (skin, accessories, proportions),
+// The other players in this world (the room's roster holds every world; the others are not drawn):
+// their Bloxity look (skin, accessories, proportions),
 // the same locomotion / carry / bench animations as the local avatar, the vehicle held overhead, the
 // press on the gym bench, platform emotes and chat bubbles. Poses come from the synced roster
 // (net.js, backend PlayerState), eased toward the last pose plus speed x heading for the time since
@@ -6,7 +7,7 @@
 // joins, leaves and changes need no events. Nearest first and capped (fewer on touch); name tags only up close.
 import * as THREE from 'three'
 import { Group } from 'three'
-import { COARSE_POINTER, GYM, NET, PLAYER_DIMS, YARD } from './config.js'
+import { COARSE_POINTER, DEFAULT_WORLD, GYM, NET, PLAYER_DIMS, YARD } from './config.js'
 import { roster, net } from './net.js'
 import * as bloxity from './bloxity.js'
 import { makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
@@ -19,15 +20,18 @@ const MAX = COARSE_POINTER ? NET.maxRemotesTouch : NET.maxRemotes
 const ease = (t) => t * t * (3 - 2 * t)
 const angleDelta = (from, to) => Math.atan2(Math.sin(to - from), Math.cos(to - from))
 
+// The roster's carry string: one vehicle ({...}) or a stack ([{...}, ...], bottom first).
 function parseCarry(json) {
-  if (!json) return null
+  if (!json) return []
   try {
     const c = JSON.parse(json)
-    return c && c.type ? c : null
+    return (Array.isArray(c) ? c : [c]).filter((v) => v && v.type)
   } catch {
-    return null
+    return []
   }
 }
+
+const hand = new THREE.Vector3()
 
 class Remote {
   constructor(scene) {
@@ -47,7 +51,7 @@ class Remote {
     this.facing = 0
     this.speed = 0
     this.carryKey = ''
-    this.vehicle = null
+    this.vehicles = []
     this.carryW = 0
     this.benchW = 0
     this.emoteSeq = 0
@@ -101,25 +105,25 @@ class Remote {
     this.group.add(this.label)
   }
 
-  // The vehicle held overhead, rebuilt only when it changes.
+  // The vehicles held in the hands, rebuilt only when they change.
   syncCarry(json) {
     if (json === this.carryKey) return
     this.carryKey = json
-    if (this.vehicle) {
-      this.scene.remove(this.vehicle.root)
-      this.vehicle = null
-    }
-    const spec = parseCarry(json)
-    if (!spec) return
-    try {
-      const model = vehicleModel(spec.type, spec.paint)
-      const material = spec.variant && spec.variant !== 'normal' ? variantMaterial(spec.variant) : sharedMaterial()
-      this.vehicle = makeVehicle(model, material)
-      this.vehicle.root.scale.setScalar(YARD.carryScale)
-      this.vehicle.mesh.castShadow = false
-      this.scene.add(this.vehicle.root)
-    } catch (err) {
-      console.warn('[remote] unknown vehicle', spec, err)
+    for (const v of this.vehicles) this.scene.remove(v.root)
+    this.vehicles = []
+    for (const spec of parseCarry(json)) {
+      try {
+        const model = vehicleModel(spec.type, spec.paint)
+        const material = spec.variant && spec.variant !== 'normal' ? variantMaterial(spec.variant) : sharedMaterial()
+        const v = makeVehicle(model, material)
+        v.root.scale.setScalar(YARD.carryScale)
+        v.mesh.castShadow = false
+        v.root.visible = this.group.visible
+        this.scene.add(v.root)
+        this.vehicles.push(v)
+      } catch (err) {
+        console.warn('[remote] unknown vehicle', spec, err)
+      }
     }
   }
 
@@ -131,7 +135,7 @@ class Remote {
 
   setVisible(on) {
     this.group.visible = on
-    if (this.vehicle) this.vehicle.root.visible = on
+    for (const v of this.vehicles) v.root.visible = on
   }
 
   update(dt, p, gym) {
@@ -186,12 +190,19 @@ class Remote {
       bench: { w, rep: p.benchRep ?? 1 },
     })
 
-    if (this.vehicle) {
-      const { root, model } = this.vehicle
+    if (this.vehicles.length) {
       const s = YARD.carryScale
-      const sway = Math.sin(now * 0.009 + this.facing) * Math.min(1, shown / 8)
-      root.position.set(g.position.x, g.position.y + PLAYER_DIMS.height + YARD.headClear + model.hy * s + Math.abs(sway) * 0.1, g.position.z)
-      root.rotation.set(0, this.facing, sway * 0.06)
+      const f = this.facing
+      if (!this.animator?.handAnchor(hand, YARD.handReach)) hand.set(g.position.x, g.position.y + PLAYER_DIMS.height + YARD.headClear, g.position.z)
+      const sway = Math.sin(now * 0.009 + f) * Math.min(1, shown / 8)
+      let under = hand.y - YARD.handSink
+      this.vehicles.forEach(({ root, model }, i) => {
+        const half = model.hy * s
+        const lean = sway * YARD.stackSway * i
+        root.position.set(hand.x + Math.cos(f) * lean, under + half, hand.z - Math.sin(f) * lean)
+        root.rotation.set(0, f, sway * 0.03 * i)
+        under += half * 2 + YARD.stackGap
+      })
     }
     if (p.emoteSeq !== this.emoteSeq) {
       this.emoteSeq = p.emoteSeq
@@ -201,7 +212,7 @@ class Remote {
 
   dispose() {
     this.scene.remove(this.group)
-    if (this.vehicle) this.scene.remove(this.vehicle.root)
+    for (const v of this.vehicles) this.scene.remove(v.root)
     disposeAnimator(this.animator)
     if (this.label) {
       this.label.material.map?.dispose()
@@ -242,7 +253,7 @@ export function createRemotePlayers(scene, { gym, localRoot, getPosition }) {
     const me = getPosition()
     order.length = 0
     players.forEach((p, id) => {
-      if (id === net.sessionId) return
+      if (id === net.sessionId || (p.world ?? DEFAULT_WORLD) !== net.world) return
       order.push({ id, p, d: Math.hypot(p.x - me.x, p.z - me.z) })
     })
     order.sort((a, b) => a.d - b.d)

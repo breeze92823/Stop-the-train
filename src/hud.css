@@ -384,9 +384,10 @@
   left: 50%;
   top: 25vh;
   transform: translateX(-50%) scale(0.6);
+  width: max-content;
+  max-width: 94vw;
   text-align: center;
   opacity: 0;
-  white-space: nowrap;
   transition: opacity 0.2s, transform 0.3s cubic-bezier(0.2, 1.7, 0.4, 1);
 }
 .hud-banner.on { opacity: 1; transform: translateX(-50%) scale(1); }
@@ -427,6 +428,16 @@
   opacity: 0;
   mix-blend-mode: screen;
 }
+.hud-warp {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, #fff 0%, #ff8af0 16%, #6a22e8 42%, #12063c 78%);
+  opacity: 0;
+  transition-property: opacity;
+  transition-timing-function: ease-in;
+  pointer-events: none;
+}
+.hud-warp.on { opacity: 1; }
 .hud-coinfly {
   position: absolute;
   left: 0;
@@ -726,17 +737,17 @@ body.hud-blur canvas {
 .hud-rb .hud-price svg { width: calc(var(--r) * 3.7); height: calc(var(--r) * 3.7); }
 
 /* --- Upgrades, Daily Rewards and Fuse Confirmation share the Rebirth frame with a blue header ----- */
-.hud-rb.upgrade, .hud-rb.daily, .hud-rb.fuse {
+.hud-rb.upgrade, .hud-rb.daily, .hud-rb.fuse, .hud-rb.offline {
   --h1: #10e0ff;
   --h2: #1c9cf6;
   --hb: #1c4e94;
   --hl: rgba(160, 236, 255, 0.75);
 }
-.hud-rb.upgrade h3, .hud-rb.daily h3, .hud-rb.fuse h3 { --g: linear-gradient(180deg, #fff 45%, #bfeaff 90%); }
+.hud-rb.upgrade h3, .hud-rb.daily h3, .hud-rb.fuse h3, .hud-rb.offline h3 { --g: linear-gradient(180deg, #fff 45%, #bfeaff 90%); }
 .hud-rb.upgrade { --r: min(1.15vw, 1.4dvh, max(6.4px, min(0.5214vw, 1.01dvh))); }
 .hud-rb.daily { --r: min(1.15vw, 1.6dvh, max(6.4px, min(0.5214vw, 1.01dvh))); width: calc(var(--r) * 83.4); }
-.hud-rb.fuse { width: calc(var(--r) * 64.4); }
-.hud-rb.fuse .x, .hud-rb.upgrade .x { width: calc(var(--r) * 7.8); }
+.hud-rb.fuse, .hud-rb.offline { width: calc(var(--r) * 64.4); }
+.hud-rb.fuse .x, .hud-rb.offline .x, .hud-rb.upgrade .x { width: calc(var(--r) * 7.8); }
 
 .hud-rb .list {
   box-sizing: border-box;
@@ -870,7 +881,7 @@ body.hud-blur canvas {
   color: #ffd21a;
 }
 
-.hud-rb.fuse .body { padding: calc(var(--r) * 1.8) calc(var(--r) * 2) calc(var(--r) * 2.6); }
+.hud-rb.fuse .body, .hud-rb.offline .body { padding: calc(var(--r) * 1.8) calc(var(--r) * 2) calc(var(--r) * 2.6); }
 .hud-rb .ask { margin: 0; text-align: center; font-size: calc(var(--r) * 4.6); line-height: 1.2; }
 .hud-rb .chance {
   display: flex;
@@ -883,7 +894,7 @@ body.hud-blur canvas {
 }
 .hud-rb .chance svg { width: calc(var(--r) * 6); height: calc(var(--r) * 6); }
 .hud-rb .chance b { font-size: calc(var(--r) * 5.2); line-height: 1; color: #7dff5a; }
-.hud-rb.fuse .go {
+.hud-rb.fuse .go, .hud-rb.offline .go {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -893,7 +904,7 @@ body.hud-blur canvas {
   margin-top: calc(var(--r) * 1.2);
   font-size: calc(var(--r) * 5.4);
 }
-.hud-rb.fuse .go svg { width: calc(var(--r) * 6.4); height: calc(var(--r) * 6.4); }
+.hud-rb.fuse .go svg, .hud-rb.offline .go svg { width: calc(var(--r) * 6.4); height: calc(var(--r) * 6.4); }
 .hud-rb.fuse .go.poor { filter: saturate(0.7) brightness(0.8); }
 
 /* Short screens (a phone on its side): tighten the columns to fit the height. */
@@ -916,3 +927,5 @@ body.hud-blur canvas {
   .hud-top { width: 76vw; }
   .hud-rb { background: rgba(0, 12, 20, 0.84); } /* it sits over the stats here */
 }
+
+.hud-rb.offline .ask.sub { font-size: calc(var(--r) * 3.6); opacity: 0.9; }

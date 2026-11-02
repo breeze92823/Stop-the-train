@@ -2,7 +2,7 @@ import { CanvasTexture, Group, Mesh, MeshStandardMaterial, Sprite, SpriteMateria
 import { PLAYER_DIMS, TRACK, VARIANTS, YARD } from './config.js'
 import { RAPIER, addFixed, world } from './physics.js'
 import { lockedMaterial, makeOutline, makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
-import { compact, state as progress, upgradeValue } from './progress.js'
+import { compact, state as progress, upgradeLevel, upgradeValue } from './progress.js'
 import { WALK_BASE } from './config.js'
 import { player } from './player.js'
 import { fontReady } from './propkit.js'
@@ -10,7 +10,7 @@ import { fontReady } from './propkit.js'
 // The Vehicle Yard and everything the player does with a vehicle: the bays and their
 // labels, hold-E to grab (only with enough Strength), the press overhead, carrying,
 // parking on the rail, dropping it anywhere else, and the bay's hologram until a
-// new one appears. One vehicle at a time for now.
+// new one appears. Up to the Carry upgrade's worth of vehicles are stacked in the hands.
 
 const NOSE_NORTH = Math.PI / 2
 const yawTo = (dx, dz) => Math.atan2(dx, dz)
@@ -131,7 +131,8 @@ function respawnLabel() {
 
 const ghostMat = new MeshStandardMaterial({ color: '#a6ffd8', transparent: true, opacity: 0.26, roughness: 0.3, metalness: 0.2, emissive: '#5fffc0', emissiveIntensity: 0.3, depthWrite: false })
 
-export function createYard(scene, fx, sound, rail, hud, interact) {
+// handAnchor(out): writes the world point between the player's palms into out, false if unknown.
+export function createYard(scene, fx, sound, rail, hud, interact, handAnchor) {
   const bays = []
   const root = new Group()
   scene.add(root)
@@ -202,8 +203,11 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
     }
   }
 
-  // --- The vehicle in the player's hands -------------------------------------------------
-  const held = { bay: null, vehicle: null, stage: 'none', t: 0, spec: null, from: new Vector3(), outline: null }
+  // --- The vehicles in the player's hands ------------------------------------------------
+  // A stack, first grabbed at the bottom: the lowest one rests on the palms, the rest sit on it.
+  // Each item: { bay, vehicle, spec, outline, lifting, t, from }. The Carry upgrade is the height.
+  const held = { items: [] }
+  const hand = new Vector3()
   const anim = { grip: 0, carry: 0, toss: 0 }
   let hold = 0 // 0..1 of the E hold
   let target = null // what the prompt points at
@@ -211,7 +215,11 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
   let strainCd = 0
   const headY = () => PLAYER_DIMS.height + YARD.headClear
 
-  const carrying = () => held.stage !== 'none'
+  const carrying = () => held.items.length > 0
+  const capacity = () => upgradeLevel('carry')
+  // The top vehicle is what E parks, drops or feeds the Fuse Machine, once it has settled.
+  const top = () => held.items[held.items.length - 1]
+  const topReady = () => !!top() && !top().lifting
 
   function grab(b) {
     if (b.flame) fx.removeEmitter(b.flame)
@@ -237,30 +245,32 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
     sprite.visible = true
     sprite.userData.set(YARD.respawnSeconds)
 
-    held.bay = b
-    held.vehicle = v
-    held.spec = { type: b.cfg.type, paint: b.cfg.paint, variant: b.cfg.variant ?? 'normal', hp: hpOf(b.cfg) }
-    held.stage = 'lifting'
-    held.t = 0
-    held.from.copy(v.root.position)
+    const item = {
+      bay: b,
+      vehicle: v,
+      spec: { type: b.cfg.type, paint: b.cfg.paint, variant: b.cfg.variant ?? 'normal', hp: hpOf(b.cfg) },
+      outline: makeOutline(b.model),
+      lifting: true,
+      t: 0,
+      from: v.root.position.clone(),
+    }
     root.remove(v.root)
     scene.add(v.root)
-    held.outline = makeOutline(b.model)
-    v.root.add(held.outline)
+    v.root.add(item.outline)
+    held.items.push(item)
     sound.liftSnatch(b.x, b.z)
     fx.dustRing(b.x, b.z, 3, 14, 'dust')
     hud.showDrop(true)
   }
 
-  function releaseHeld() {
-    const v = held.vehicle
-    v.root.remove(held.outline)
-    scene.remove(v.root)
-    const p = v.root.position.clone()
-    Object.assign(held, { bay: null, vehicle: null, stage: 'none', t: 0, spec: null, outline: null })
+  // Takes the top vehicle out of the hands: { spec, from } (where it was in the world).
+  function releaseTop() {
+    const item = held.items.pop()
+    item.vehicle.root.remove(item.outline)
+    scene.remove(item.vehicle.root)
     tossT = 1
-    hud.showDrop(false)
-    return p
+    hud.showDrop(held.items.length > 0)
+    return { spec: item.spec, from: item.vehicle.root.position.clone() }
   }
 
   function railTargetX() {
@@ -269,20 +279,18 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
   const nearRail = () => Math.abs(player.position.z - TRACK.z) < TRACK.placeReach
 
   function parkOnRail() {
-    if (held.stage !== 'carrying') return
-    const spec = held.spec
-    const from = releaseHeld()
+    if (!topReady()) return
+    const { spec, from } = releaseTop()
     rail.park(spec, from, railTargetX())
     sound.toss(from.x, from.z)
     interact.reset()
   }
 
-  // DROP CAR: onto the rail when it is in reach, anywhere else the vehicle is lost back to the yard.
+  // DROP CAR: the top vehicle onto the rail when it is in reach, anywhere else it is lost back to the yard.
   function drop() {
-    if (held.stage !== 'carrying') return
+    if (!topReady()) return
     if (nearRail() && rail.count() < hud.railCap()) return parkOnRail()
-    const spec = held.spec
-    const from = releaseHeld()
+    const { spec, from } = releaseTop()
     rail.dropAway(spec, from, Math.sin(player.facing) * 6, Math.cos(player.facing) * 6)
     sound.toss(from.x, from.z)
   }
@@ -302,30 +310,41 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
     return best
   }
 
+  // The stack follows the real palms (the midpoint of both hands), so the underside of the lowest
+  // vehicle rests on them wherever the arm pose and the walk cycle put them.
   function updateHeld(dt) {
-    const v = held.vehicle
-    if (!v) return
-    held.t += dt
+    const items = held.items
+    if (!items.length) return
     const f = player.facing
     const p = player.renderPosition
     const s = YARD.carryScale
-    const overhead = p.y + headY() + v.model.hy * s
-    if (held.stage === 'lifting') {
-      const k = ease(clamp(held.t / 0.5, 0, 1))
-      v.root.position.set(held.from.x + (p.x - held.from.x) * k, held.from.y + (overhead - held.from.y) * k + Math.sin(k * Math.PI) * 0.7, held.from.z + (p.z - held.from.z) * k)
-      v.root.rotation.y = NOSE_NORTH + (((f - NOSE_NORTH + Math.PI) % (Math.PI * 2)) - Math.PI) * k
-      const size = 1 + (s - 1) * k
-      v.root.scale.setScalar(size)
-      if (held.t >= 0.5) {
-        held.stage = 'carrying'
-        sound.liftSet(p.x, p.z)
-      }
-      return
-    }
+    if (!handAnchor(hand, YARD.handReach)) hand.set(p.x, p.y + headY(), p.z)
     const speed = Math.hypot(player.velocity.x, player.velocity.z)
     const sway = Math.sin(performance.now() * 0.009) * Math.min(1, speed / 8)
-    v.root.position.set(p.x, overhead + Math.abs(sway) * 0.1, p.z)
-    v.root.rotation.set(0, f, sway * 0.06)
+    let under = hand.y - YARD.handSink
+    items.forEach((it, i) => {
+      const v = it.vehicle
+      const half = v.model.hy * s
+      const lean = sway * YARD.stackSway * i
+      const x = hand.x + Math.cos(f) * lean
+      const y = under + half
+      const z = hand.z - Math.sin(f) * lean
+      under += half * 2 + YARD.stackGap
+      if (!it.lifting) {
+        v.root.position.set(x, y, z)
+        v.root.rotation.set(0, f, sway * 0.03 * i)
+        return
+      }
+      it.t += dt
+      const k = ease(clamp(it.t / 0.5, 0, 1))
+      v.root.position.set(it.from.x + (x - it.from.x) * k, it.from.y + (y - it.from.y) * k + Math.sin(k * Math.PI) * 0.7, it.from.z + (z - it.from.z) * k)
+      v.root.rotation.y = NOSE_NORTH + (((f - NOSE_NORTH + Math.PI) % (Math.PI * 2)) - Math.PI) * k
+      v.root.scale.setScalar(1 + (s - 1) * k)
+      if (it.t >= 0.5) {
+        it.lifting = false
+        sound.liftSet(p.x, p.z)
+      }
+    })
   }
 
   // extra: what else E could act on here (a bench, the chest), offered when no vehicle is.
@@ -359,14 +378,29 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
 
     // What E would act on right now.
     let want = null
-    if (canInteract) {
-      if (held.stage === 'carrying') {
+    if (canInteract && (!carrying() || topReady())) {
+      if (carrying()) {
         if (nearRail() && rail.count() < hud.railCap()) want = { kind: 'park', x: railTargetX(), y: TRACK.top + 2.6, z: TRACK.z, text: 'Park' }
         else want = carryExtra?.() ?? null
-      } else if (held.stage === 'none') {
+      }
+      if (!want) {
         const b = nearestBay()
-        if (b && liftable(b)) want = { kind: 'grab', bay: b, x: b.x, y: b.model.H * 0.6 + 0.6, z: b.z, text: 'Grab' }
-        else want = extra?.() ?? null
+        if (b && liftable(b)) {
+          const at = { x: b.x, y: b.model.H * 0.6 + 0.6, z: b.z }
+          if (held.items.length < capacity()) want = { kind: 'grab', bay: b, ...at, text: 'Grab' }
+          else {
+            want = {
+              kind: 'full',
+              ...at,
+              text: 'Full',
+              instant: true,
+              act: () => {
+                sound.deny()
+                hud.toast(`Your hands are full (${held.items.length}/${capacity()})`)
+              },
+            }
+          }
+        } else if (!carrying()) want = extra?.() ?? null
       }
     }
     const same = want && target && want.kind === target.kind && want.bay === target.bay
@@ -410,21 +444,20 @@ export function createYard(scene, fx, sound, rail, hud, interact) {
     updateHeld(dt)
 
     anim.grip = target?.kind === 'grab' && interact.down() ? hold : 0
-    anim.carry = held.stage === 'carrying' || held.stage === 'lifting' ? 1 : 0
+    anim.carry = carrying() ? 1 : 0
     if (tossT > 0) tossT = Math.max(0, tossT - dt * 2.6)
     anim.toss = tossT
-    player.speedScale = (carrying() ? YARD.carrySpeed : 1) * (upgradeValue('walkspeed') / WALK_BASE)
+    const load = carrying() ? Math.max(YARD.carryFloor, YARD.carrySpeed - YARD.carrySlow * (held.items.length - 1)) : 1
+    player.speedScale = load * (upgradeValue('walkspeed') / WALK_BASE)
   }
 
-  // Hands the carried vehicle over (the Fuse Machine eats it): its spec, or null.
+  // Hands the top vehicle over (the Fuse Machine eats it): its spec, or null.
   function takeHeld() {
-    if (held.stage !== 'carrying') return null
-    const spec = held.spec
-    releaseHeld()
-    return spec
+    if (!topReady()) return null
+    return releaseTop().spec
   }
 
-  // The vehicle in the hands (type, paint, variant) for the others to draw, or null.
-  const heldSpec = () => (held.spec ? { type: held.spec.type, paint: held.spec.paint, variant: held.spec.variant } : null)
+  // The vehicles in the hands, bottom first ({ type, paint, variant } each), for the others to draw, or null.
+  const heldSpec = () => (held.items.length ? held.items.map(({ spec: s }) => ({ type: s.type, paint: s.paint, variant: s.variant })) : null)
   return { update, drop, carrying, takeHeld, anim, bays, heldSpec }
 }

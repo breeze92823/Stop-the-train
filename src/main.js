@@ -1,5 +1,5 @@
 import { Clock, Group, NeutralToneMapping, PCFSoftShadowMap, PerspectiveCamera, Scene, SRGBColorSpace, WebGLRenderer } from 'three'
-import { CAMERA, graphicsPreset, MAILBOX_REACH, REBIRTH, RENDER, SET, TRACK } from './config.js'
+import { CAMERA, graphicsPreset, MAILBOX_REACH, RENDER, SET, TRACK, YARD } from './config.js'
 import * as bloxity from './bloxity.js'
 import { inputState, install as installInput, isHeld, onKey } from './input.js'
 import { installTouch } from './touch.js'
@@ -15,6 +15,8 @@ import { createYard } from './yard.js'
 import { createGym } from './gym.js'
 import { createCoins } from './coins.js'
 import { createGame } from './game.js'
+import { createShared } from './shared.js'
+import { createWorlds } from './worlds.js'
 import { createHud } from './hud.js'
 import { addCoins, compact, loadProgress, state as progress } from './progress.js'
 import { initNet, net, onBoards, sendCarry, sendEmote, sendPose, sendTrain, syncAvatar } from './net.js'
@@ -147,7 +149,7 @@ const rail = createRail(scene, fx, sound, {
   onLand: (x, z, force) => addShake(0.12 * force),
 })
 const coins = createCoins(scene, fx, sound, addCoins)
-const yard = createYard(scene, fx, sound, rail, hud, interact)
+const yard = createYard(scene, fx, sound, rail, hud, interact, (out) => animator?.handAnchor(out, YARD.handReach) ?? false)
 const gym = createGym(scene, fx, sound, hud)
 const fuse = createFuse({ rail, yard, hud, lobby, fx, sound })
 player.onLockedJump = () => gym.stop()
@@ -155,10 +157,11 @@ player.onLockedJump = () => gym.stop()
 const game = createGame({ fx, sound, hud, lobby, rail, coins, trains: { spawn: (...a) => trains.spawn(...a) } })
 const trains = createTrains(scene, fx, sound, game.hooks)
 game.seed()
-const offline = loadProgress()
-if (offline > 0) hud.showBanner('WELCOME BACK!', `+${compact(offline)} POWER EARNED OFFLINE`, 4200)
+const shared = createShared({ game, rail, trains, hud, sound })
+const worlds = createWorlds({ game, rail, trains, fx, gym, hud, sound, lighting })
+loadProgress()
 // The server's save replaces the local cache once it answers (signed-in players).
-initNet({ onWelcome: (gained) => gained > 0 && hud.showBanner('WELCOME BACK!', `+${compact(gained)} POWER EARNED OFFLINE`, 4200) })
+initNet({ onWelcome: (report) => hud.openOffline(report) })
 onBoards((data) => lobby.setBoards?.(data))
 
 // --- Player avatar ----------------------------------------------------------
@@ -237,8 +240,8 @@ bloxity.onAdBreak((on) => {
   adPaused = on
   if (on) {
     mutedBefore = isMuted()
-    setMuted(true)
-  } else setMuted(mutedBefore)
+    setMuted(true, false)
+  } else setMuted(mutedBefore, false)
 })
 
 // Falling out of the world shows the portal's death screen; the player respawns only when it allows.
@@ -277,13 +280,13 @@ function respawnNow() {
 onKey('KeyR', respawnNow)
 installTouch({ mode: toggleMode, day: () => lighting.toggleDayNight(), respawn: respawnNow })
 
-// Walk-in pads: the pink Upgrade ring opens its window; the others explain themselves.
+// Walk-in pads: the pink Upgrade ring opens its window, the mailbox the portal menu (as Esc does), the portal takes the player to the other world; the Fuse pad explains itself.
 const ring = SET.stall.ring
 const pads = [
   { x: ring.x, z: ring.z, r: ring.r, inside: false, enter: () => hud.openWindow('upgrade') },
-  { x: SET.mailbox.x, z: SET.mailbox.z, r: MAILBOX_REACH, inside: false, enter: () => hud.openWindow('feedback') },
+  { x: SET.mailbox.x, z: SET.mailbox.z, r: MAILBOX_REACH, inside: false, enter: () => bloxity.showMenu() },
   { x: SET.fuse.ring.x, z: SET.fuse.ring.z, r: SET.fuse.ring.r, inside: false, enter: () => fuse.hint() },
-  { x: SET.portal.ring.x, z: SET.portal.ring.z, r: SET.portal.ring.r, inside: false, enter: () => hud.toast(progress.rebirths >= REBIRTH.portal ? 'Galaxy World: coming soon' : `Galaxy World needs ${REBIRTH.portal} rebirths. You have ${progress.rebirths}.`) },
+  { x: SET.portal.ring.x, z: SET.portal.ring.z, r: SET.portal.ring.r, inside: false, enter: () => worlds.usePortal() },
 ]
 function updatePads() {
   for (const p of pads) {
@@ -363,6 +366,7 @@ function sendPresence() {
 function frame(real, elapsed) {
   if (adPaused) return
   governQuality(real)
+  shared.update()
   game.update(real)
   const dt = real * game.g.timeScale
 
@@ -444,5 +448,5 @@ if (import.meta.env.DEV) {
     }
     return (performance.now() - t0) / n
   }
-  window.__game = { sound, audioCore: AudioCore, player, scene, renderer, camera, postfx, bodies: bodyCount, toggleMode, teleport, game, rail, trains, yard, gym, fx, hud, coins, interact, advance, bench, applySetting, input: inputState, TRACK }
+  window.__game = { sound, audioCore: AudioCore, player, scene, renderer, camera, postfx, bodies: bodyCount, toggleMode, teleport, game, rail, trains, yard, gym, fx, hud, coins, interact, advance, bench, applySetting, input: inputState, TRACK, progress, worlds, remotes, net }
 }

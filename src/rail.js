@@ -1,6 +1,6 @@
 import { Quaternion, Vector3 } from 'three'
 import { PHYSICS, TRACK, VARIANTS } from './config.js'
-import { RAPIER, addDynamic, onTick, removeBody, unbindMesh } from './physics.js'
+import { RAPIER, addDynamic, lockFromPlayer, onTick, removeBody, unbindMesh, unlockFromPlayer } from './physics.js'
 import { crumple, makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
 
 // Vehicles out in the world: thrown onto the rail by the player, resting as real
@@ -37,11 +37,15 @@ export function createRail(scene, fx, sound, hooks) {
     item.body = addDynamic(root, shape, { density: 0.5, friction: 0.7, restitution: 0.04, linearDamping: 0.06, angularDamping: 0.4, ccd: true })
   }
 
-  function make(spec) {
+  // Ids tie an item to the server's shared rail (ids are random, so two players never clash).
+  const newId = () => Math.random().toString(36).slice(2, 12)
+  const byId = (id) => parked.find((v) => v.id === id) ?? null
+
+  function make(spec, id) {
     const model = vehicleModel(spec.type, spec.paint)
     const material = spec.variant && spec.variant !== 'normal' ? variantMaterial(spec.variant) : sharedMaterial()
     const vehicle = makeVehicle(model, material)
-    return { vehicle, spec, hp: spec.hp, x: 0, halfLen: model.hx, landed: false, age: 0, vyPrev: 0, squash: 0, flame: null }
+    return { id: id ?? newId(), vehicle, spec, hp: spec.hp, x: 0, halfLen: model.hx, landed: false, age: 0, vyPrev: 0, squash: 0, flame: null }
   }
 
   // Burning aura of golden and emerald vehicles.
@@ -73,8 +77,10 @@ export function createRail(scene, fx, sound, hooks) {
   }
 
   // Throws a vehicle from `from` (world) to rail position x, along a ballistic arc.
-  function park(spec, from, x) {
-    const item = make(spec)
+  // `id` / `remote` come from the shared rail: another player's throw is not sent back.
+  // `foreign`: another player's vehicle, which the local player cannot shove.
+  function park(spec, from, x, id, remote = false, foreign = false) {
+    const item = make(spec, id)
     const { model } = item.vehicle
     const yaw = (Math.random() < 0.5 ? 0 : Math.PI) + rnd(-0.28, 0.28)
     const y = pileTop(x, model.hx) + model.hy + 0.1
@@ -84,23 +90,47 @@ export function createRail(scene, fx, sound, hooks) {
     item.body.setLinvel({ x: (x - from.x) / TOSS_TIME, y: (y - from.y - 0.5 * g * TOSS_TIME * TOSS_TIME) / TOSS_TIME, z: (z - from.z) / TOSS_TIME }, true)
     item.body.setAngvel({ x: rnd(-0.8, 0.8), y: rnd(-0.6, 0.6), z: rnd(-0.8, 0.8) }, true)
     item.x = x
+    if (foreign) lockFromPlayer(item.body)
     parked.push(item)
     aura(item)
     announce()
+    if (!remote) hooks.onPark?.(item, spec, from, x)
     return item
   }
 
   // Sets a vehicle straight down onto the rail (the lobby's first few).
-  function seed(spec, x, height = 0) {
-    const item = make(spec)
+  function seed(spec, x, height = 0, id, remote = false, foreign = false) {
+    const item = make(spec, id)
     const { model } = item.vehicle
     body(item, x, TRACK.top + model.hy + 0.02 + height, TRACK.z + rnd(-0.2, 0.2), (Math.random() < 0.5 ? 0 : Math.PI) + rnd(-0.22, 0.22))
     item.landed = true
     item.x = x
+    if (foreign) lockFromPlayer(item.body)
     parked.push(item)
     aura(item)
     announce()
+    if (!remote) hooks.onPark?.(item, spec, null, x)
+    return item
   }
+
+  // The shared rail was (re)loaded: whatever stood here is replaced.
+  function reset() {
+    for (const item of parked.splice(0)) remove(item)
+    announce()
+  }
+
+  // The server refused a throw: the vehicle tumbles off like a dropped one.
+  function discard(id) {
+    const item = byId(id)
+    if (!item) return
+    parked.splice(parked.indexOf(item), 1)
+    item.age = SPENT_LIFE - 2.6
+    spent.push(item)
+    announce()
+  }
+
+  // What stands on the rail now, to stock a new shared room.
+  const list = () => parked.map((v) => ({ spec: v.spec, x: v.x, halfLen: v.halfLen }))
 
   // A vehicle let go away from the rail: it bounces once and is reclaimed.
   function dropAway(spec, from, vx, vz) {
@@ -128,6 +158,7 @@ export function createRail(scene, fx, sound, hooks) {
     if (i >= 0) parked.splice(i, 1)
     const { root, model } = item.vehicle
     const b = item.body
+    unlockFromPlayer(b)
     const t = b.translation()
     const r = b.rotation()
     // Fold the side that took it.
@@ -224,6 +255,7 @@ export function createRail(scene, fx, sound, hooks) {
       const v = parked[i]
       if (Math.abs(v.vehicle.root.position.z - TRACK.z) > 7) {
         parked.splice(i, 1)
+        unlockFromPlayer(v.body)
         v.age = 0
         spent.push(v)
       }
@@ -237,5 +269,5 @@ export function createRail(scene, fx, sound, hooks) {
     for (const v of parked) v.vehicle.mesh.position.y = -v.vehicle.model.cy + Math.sin(performance.now() * 0.05 + v.x) * 0.012 * k
   }
 
-  return { park, seed, dropAway, nextAt, smash, update, sweep, rumble, totals, count: () => parked.length, spentCount: () => spent.length }
+  return { setOnPark: (fn) => (hooks.onPark = fn), park, seed, reset, discard, list, byId, dropAway, nextAt, smash, update, sweep, rumble, totals, count: () => parked.length, spentCount: () => spent.length }
 }

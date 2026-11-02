@@ -107,7 +107,28 @@ export function addFixedBoxFor(mesh, opts) {
 }
 
 export function removeBody(body) {
+  unlockFromPlayer(body)
   world.removeRigidBody(body)
+}
+
+// Bodies the local player's walking cannot shove (other players' vehicles on the rail). They still
+// obey every other force: the train, stacking, a toppling neighbour.
+const playerLocked = new Set()
+export const lockFromPlayer = (body) => playerLocked.add(body)
+export const unlockFromPlayer = (body) => playerLocked.delete(body)
+
+// Runs `move` (the character controller's step, which applies push impulses) and undoes
+// whatever it did to the locked bodies' velocities.
+export function withoutPushing(move) {
+  if (!playerLocked.size) return move()
+  const saved = []
+  for (const b of playerLocked) saved.push(b, b.linvel(), b.angvel())
+  const out = move()
+  for (let i = 0; i < saved.length; i += 3) {
+    saved[i].setLinvel(saved[i + 1], false)
+    saved[i].setAngvel(saved[i + 2], false)
+  }
+  return out
 }
 
 // First fixed collider hit between two points, as a 0..1 fraction of the

@@ -4,7 +4,7 @@
 // cycle at two depths, its phase advancing with distance travelled so the feet
 // stay planted at any speed. Writes only to bones and the avatar root's
 // rotation / position.y (the player group owns world placement).
-import { Euler, Quaternion } from 'three'
+import { Euler, Quaternion, Vector3 } from 'three'
 import { ANIM, EMOTE } from '../config.js'
 import { BONE_INDEX, PlayerRig, PoseBuffer } from './rig.js'
 
@@ -22,6 +22,9 @@ const L = ANIM.locomotion
 const DEG = Math.PI / 180
 const eulerTmp = new Euler()
 const quatTmp = new Quaternion()
+const handShoulder = new Vector3()
+const handElbow = new Vector3()
+const handForearm = new Vector3()
 
 export function makeAnimator(root) {
   if (!root) return null
@@ -104,6 +107,23 @@ class PlayerAnimator {
       // Blend from the procedural pose already on the bone.
       tr.bone.quaternion.slerp(quatTmp, e.w)
     }
+  }
+
+  // Writes the world point midway between the two palms into `out` (a Vector3) and returns true.
+  // The palm is the elbow plus the forearm, taken as `reach` times the upper arm in the same direction.
+  // False when the rig has no arms to measure (the procedural fallback has no elbows).
+  handAnchor(out, reach = 1) {
+    const n = this.root.nodes
+    if (!n?.ArmL1 || !n.ArmL2 || !n.ArmR1 || !n.ArmR2) return false
+    out.set(0, 0, 0)
+    for (const side of ['L', 'R']) {
+      n[`Arm${side}1`].getWorldPosition(handShoulder)
+      n[`Arm${side}2`].getWorldPosition(handElbow)
+      handForearm.subVectors(handElbow, handShoulder).multiplyScalar(reach)
+      out.add(handElbow.add(handForearm))
+    }
+    out.multiplyScalar(0.5)
+    return true
   }
 
   dispose() {

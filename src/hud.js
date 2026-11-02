@@ -1,8 +1,8 @@
 import './hud.css'
 import { Vector3 } from 'three'
-import { DAILY, REBIRTH, UPGRADES } from './config.js'
+import { DAILY, REBIRTH, SHOP, UPGRADES } from './config.js'
 import * as bloxity from './bloxity.js'
-import { buyUpgrade, claimDaily, compact, dailyLeft, onChange, rebirth, rebirthCost, state, upgradeCost, upgradeLevel, upgradeValue } from './progress.js'
+import { buyShop, buyUpgrade, claimDaily, compact, dailyLeft, onChange, owns, rebirth, rebirthCost, shopPrice, skipRebirth, state, upgradeCost, upgradeLevel, upgradeValue } from './progress.js'
 import * as sound from './audio/index.js'
 
 // The DOM overlay drawn over the game: stats, buttons, timers, the train's health bar,
@@ -108,14 +108,24 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
 
   // Right column.
   const right = el('div', 'hud-right')
-  const offer = (art, price, html) => {
-    const b = el('button', 'hud-offer', `<div class="hud-price st">${I.robux}${price}</div>${art}<span class="st">${html}</span>`)
+  const offer = (id, art, html) => {
+    const b = el('button', 'hud-offer', `<div class="hud-price st">${I.coin}${compact(shopPrice(id))}</div>${art}<span class="st">${html}</span>`)
     b.type = 'button'
-    b.addEventListener('click', () => openWindow('store'))
+    b.addEventListener('click', () => {
+      if (buyShop(id)) {
+        sound.buy()
+        toast('x2 POWER unlocked!')
+      } else {
+        sound.deny()
+        toast(`You need ${compact(shopPrice(id))} coins`)
+      }
+    })
+    onChange(() => {
+      b.style.display = owns(id) ? 'none' : ''
+    })
     right.appendChild(b)
   }
-  offer(I.bicep('#ffc22e', '#ff7a12').replace('<svg', '<svg class="art"'), 3, '<span class="c-yellow">x2</span> <span class="c-rainbow2">POWER</span>')
-  offer(I.car, 24, '<span class="c-yellow">+1</span> <span class="c-rainbow2">CARRY</span>')
+  offer('power2', I.bicep('#ffc22e', '#ff7a12').replace('<svg', '<svg class="art"'), '<span class="c-yellow">x2</span> <span class="c-rainbow2">POWER</span>')
 
   // Bottom.
   const friend = el('div', 'hud-friend', `${I.faces}<span class="st">Friend Boost: <em>+0%</em></span>`)
@@ -152,8 +162,9 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
   const banner = el('div', 'hud-banner', '<h2></h2><p class="st"></p>')
   const toastEl = el('div', 'hud-toast')
   const flash = el('div', 'hud-flash')
+  const warpEl = el('div', 'hud-warp')
   const back = el('div', 'hud-win-back')
-  root.append(flash, top, left, right, friend, comeback, drop, stopBtn, prompt, banner, toastEl, back)
+  root.append(flash, top, left, right, friend, comeback, drop, stopBtn, prompt, banner, toastEl, back, warpEl)
 
   // Reserved corners of the portal: keep the top row clear of them on narrow screens.
   bloxity.onReservedAreas((areas) => {
@@ -198,6 +209,13 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
   let upSig = ''
   let fuseInfo = { names: '', chance: 0, cost: 0 }
   let dailyReady = false
+  let offlineInfo = null
+  const awayText = (sec) => {
+    const m = Math.floor(sec / 60)
+    const d = Math.floor(m / 1440)
+    const h = Math.floor((m % 1440) / 60)
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m % 60}m` : `${m}m`
+  }
   const upgradeSig = () => UPGRADES.map((u) => `${upgradeLevel(u.id)}${state.coins >= upgradeCost(u.id) ? 'y' : 'n'}`).join()
   // Filled in place: Strength streams in during training, and rebuilding the buttons would drop a click.
   function fillRebirth() {
@@ -219,7 +237,7 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
         const buys =
           lvl >= u.max
             ? '<div class="maxed st">MAX</div>'
-            : `<button type="button" class="coin st${state.coins < c ? ' poor' : ''}" data-go="${u.id}">${I.coin}<span>${compact(c)}</span></button><button type="button" class="rbx st" data-go="rbx:${u.id}">${I.robux}<span>${u.robux}</span></button>`
+            : `<button type="button" class="coin st${state.coins < c ? ' poor' : ''}" data-go="${u.id}">${I.coin}<span>${compact(c)}</span></button>`
         return `<div class="row${u.caps ? ' caps' : ''}" style="background-image:linear-gradient(${u.horizontal ? 90 : 180}deg,${u.c1},${u.c2})"><div class="ico">${ART[u.art]}<b class="st">Lv.${lvl}</b></div><div class="info"><div class="name st">${u.title}</div><div class="desc st">${u.fmt(upgradeValue(u.id))}</div></div><div class="buys">${buys}</div></div>`
       }).join('')
       win.innerHTML = `<div class="head"><h3 class="grad" data-t="UPGRADES!">UPGRADES!</h3>${close}</div><div class="list">${rows}</div>`
@@ -233,7 +251,7 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
           <div class="bar"><div class="fill"></div><div class="text st"><span class="count"></span>${I.bicep('#ffc22e', '#ff7a12')}</div></div>
           <div class="btns">
             <button type="button" class="go st" data-go="rebirth">REBIRTH</button>
-            <button type="button" class="skip" data-go="skip"><div class="hud-price st">${I.robux}${REBIRTH.skipRobux}</div><span class="st">SKIP REBIRTH</span><small class="grad" data-t="(KEEP YOUR POWER!)">(KEEP YOUR POWER!)</small></button>
+            <button type="button" class="skip" data-go="skip"><div class="hud-price st">${I.coin}${compact(REBIRTH.skipCoins)}</div><span class="st">SKIP REBIRTH</span><small class="grad" data-t="(KEEP YOUR POWER!)">(KEEP YOUR POWER!)</small></button>
           </div>
         </div>`
       fillRebirth()
@@ -255,17 +273,19 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     } else if (kind === 'fuse') {
       const f = fuseInfo
       win.innerHTML = `<div class="head"><h3 class="grad" data-t="FUSE CONFIRMATION">FUSE CONFIRMATION</h3>${close}</div><div class="body"><p class="ask st">Are you sure you want to fuse (${f.names})?</p><div class="chance">${I.clover}<b class="st">${f.chance}%</b></div><button type="button" class="go st${state.coins < f.cost ? ' poor' : ''}" data-go="fuse">${I.coin}<span>${compact(f.cost)}</span></button></div>`
+    } else if (kind === 'offline') {
+      const o = offlineInfo
+      win.innerHTML = `<div class="head"><h3 class="grad" data-t="WELCOME BACK!">WELCOME BACK!</h3>${close}</div><div class="body"><p class="ask st">You were away for ${awayText(o.away)}</p><div class="chance">${I.bicep('#ffc22e', '#ff7a12')}<b class="st">+${compact(o.gained)}</b></div><p class="ask sub st">STRENGTH EARNED OFFLINE${o.capped ? ` (MAX ${o.capHours}H)` : ''}</p><button type="button" class="go st" data-close>COLLECT</button></div>`
     } else if (kind === 'store') {
-      win.innerHTML = `${close}<h3 class="st">STORE</h3><div class="hud-row"><div><strong class="st">x2 Power</strong><p>Coming soon</p></div>${go('none', 'SOON', false)}</div><div class="hud-row"><div><strong class="st">+1 Carry</strong><p>Coming soon</p></div>${go('none', 'SOON', false)}</div><div class="hud-row"><div><strong class="st">Admin Bench</strong><p>x200 Power on the rainbow bench. Coming soon</p></div>${go('none', 'SOON', false)}</div>`
-    } else if (kind === 'feedback') {
-      win.innerHTML = `${close}<h3 class="st">FEEDBACK</h3><div class="hud-row"><div><strong class="st">Coming soon</strong><p>The mailbox opens once the game has its server. Thanks for stopping by!</p></div></div>`
+      const item = (id, name, desc) => `<div class="hud-row"><div><strong class="st">${name}</strong><p>${desc}</p></div>${owns(id) ? go('none', 'OWNED', false) : go(`shop:${id}`, `${compact(shopPrice(id))} Coins`, true)}</div>`
+      win.innerHTML = `${close}<h3 class="st">STORE</h3>${item('power2', 'x2 Power', `Every rep gives x${SHOP.power2.mult} Strength, forever.`)}${item('admin', 'Admin Bench', 'x200 Power on the rainbow bench in the gym.')}`
     }
   }
   const win = el('div', 'hud-win')
   back.appendChild(win)
   function openWindow(kind) {
     current = kind
-    const reborn = ['rebirth', 'upgrade', 'daily', 'fuse'].includes(kind)
+    const reborn = ['rebirth', 'upgrade', 'daily', 'fuse', 'offline'].includes(kind)
     win.className = reborn ? `hud-rb ${kind === 'rebirth' ? '' : kind}` : 'hud-win'
     win.innerHTML = ''
     back.classList.toggle('clear', reborn)
@@ -300,18 +320,31 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
       return
     }
     if (go === 'skip') {
-      // Robux sales arrive with the Store; this keeps the player's Strength then.
-      sound.deny()
-      toast('Robux purchases are coming soon')
+      if (skipRebirth()) {
+        closeWindow()
+        sound.victory()
+        flashK = 0.7
+        replay(multi, 'pulse')
+        replay(luck, 'pulse')
+        showBanner(`REBIRTH ${state.rebirths}!`, `x${state.multiplier} POWER  ${state.luck}% LUCK  (POWER KEPT)`)
+      } else {
+        sound.deny()
+        replay(win.querySelector('.bar'), 'no')
+        if (state.coins < REBIRTH.skipCoins) toast(`You need ${compact(REBIRTH.skipCoins)} coins`)
+      }
+      return
+    }
+    if (go.startsWith('shop:')) {
+      if (buyShop(go.slice(5))) sound.buy()
+      else {
+        sound.deny()
+        toast('Not enough coins')
+      }
+      if (current) render(current)
       return
     }
     if (go === 'fuse') {
       onFuse()
-      return
-    }
-    if (go.startsWith('rbx:')) {
-      sound.deny()
-      toast('Robux purchases are coming soon')
       return
     }
     if (go === 'claim') {
@@ -366,6 +399,11 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
       fuseInfo = info
       openWindow('fuse')
     },
+    openOffline(report) {
+      offlineInfo = report
+      openWindow('offline')
+      sound.victory?.()
+    },
     closeWindow,
     windowOpen: () => current !== null,
     railCap,
@@ -374,6 +412,18 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     showBanner,
     flash(k) {
       flashK = Math.max(flashK, k)
+    },
+    // The screen swirls shut, `covered` runs behind it, then it opens on the other side.
+    warp({ fadeMs, holdMs }, covered, done) {
+      warpEl.style.transitionDuration = `${fadeMs}ms`
+      warpEl.classList.add('on')
+      setTimeout(() => {
+        covered()
+        setTimeout(() => {
+          warpEl.classList.remove('on')
+          setTimeout(done, fadeMs)
+        }, holdMs)
+      }, fadeMs)
     },
     showDrop(on) {
       drop.classList.toggle('on', on)

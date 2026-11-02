@@ -1,7 +1,7 @@
 import { inputState } from './input.js'
 import { getYaw, syncYawToPlayer } from './camera.js'
 import { isFirstPerson } from './modes.js'
-import { RAPIER, alpha, onTick, world } from './physics.js'
+import { RAPIER, alpha, onTick, withoutPushing, world } from './physics.js'
 import { PHYSICS, PLAYER_DIMS, SPAWN, SPAWN_FACING } from './config.js'
 
 // The local player singleton, mutated in place. A kinematic Rapier capsule
@@ -151,7 +151,7 @@ function step(dt) {
   if (player.grounded && !jumped && player.velocity.y < -2 && player.stun <= 0) player.velocity.y = -2 // stay pressed to slopes
 
   const desired = { x: player.velocity.x * dt, y: player.velocity.y * dt, z: player.velocity.z * dt }
-  controller.computeColliderMovement(collider, desired, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS)
+  withoutPushing(() => controller.computeColliderMovement(collider, desired, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS))
   const moved = controller.computedMovement()
   player.grounded = !jumped && controller.computedGrounded()
 

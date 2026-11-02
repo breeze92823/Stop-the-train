@@ -45,7 +45,7 @@ export const TRACK = {
 export const SET = {
   stall: { x: -20.5, z: -7, yaw: 0.42, ring: { x: -16.5, z: 0.4, r: 3 } },
   fuse: { x: -26.5, z: 3.8, yaw: 0.7, ring: { x: -20.5, z: 11, r: 3.8 } },
-  admin: { x: 22, z: -7, yaw: -0.98 },
+  chest: { x: 22, z: -7, yaw: -0.98, ringR: 2, reach: 5 },
   plaza: { x0: -11, x1: 11, z0: 12, z1: 34, height: 0.34, pad: 4.4 },
   hpSign: { x: -1, z: -16 }, // the "2,316,125 / 32 VEHICLES" lying on the lawn
   trainSign: { x: 4, y: 24, z: -30 }, // the floating CURRENT TRAIN board
@@ -59,10 +59,9 @@ export const SET = {
     list: [
       { z: 30.5, height: 8.2, width: 6.4, title: 'MOST REBIRTHS', colors: ['#ff6cf0', '#c81fd0'], stat: 'rebirths' },
       { z: 22, height: 10, width: 7, title: 'MOST TRAIN BREAKS', colors: ['#fff36a', '#ffb400'], stat: 'breaks' },
-      { z: 13.5, height: 8.2, width: 6.4, title: 'ROBUX SPENT', colors: ['#d6ff5a', '#4fd02a'], stat: 'robux' },
+      { z: 13.5, height: 8.2, width: 6.4, title: 'MOST STRENGTH', colors: ['#d6ff5a', '#4fd02a'], stat: 'strength' },
     ],
   },
-  chest: { x: -46, z: 7.6, yaw: 1.05, ringR: 2, reach: 5 },
   trainPower: { x: 80, y: 13.5, z: 16, height: 6.4 },
   collectSign: { x: -14, y: 13, z: 68 },
   diamondSign: { x: -2, y: 10.5, z: 72 },
@@ -118,14 +117,20 @@ export const YARD = {
   respawnSeconds: 8, // an emptied bay is a hologram this long
   carrySpeed: 0.85, // walk speed factor under a vehicle
   carryScale: 0.86, // a held vehicle is drawn a little smaller, like the reference
-  headClear: 1.15, // m above the avatar's height the vehicle's underside sits
+  headClear: 1.15, // m above the avatar's height the vehicle's underside sits (only when no hands can be found)
+  carrySlow: 0.06, // walk speed lost for every extra vehicle in the stack
+  carryFloor: 0.55, // ...down to this factor
+  handSink: 0.1, // m the palms press into the underside of the lowest vehicle
+  handReach: 1, // forearm length as a multiple of the upper arm: where the palm is past the elbow
+  stackGap: 0.04, // m between stacked vehicles
+  stackSway: 0.05, // m each level up leans as the player walks
 }
 export const MAILBOX_REACH = 4.5
-export const FREE_COINS = { cooldown: 15 * 60, value: 5000 } // s between chests; coins, times the multiplier
+export const FREE_COINS = { playSeconds: 30 * 60, value: 10000 } // s played (tab visible) per chest, tracked by the server (backend CHEST); coins per claim
 
 // The gym: two rows of benches inside a dashed line, racks on the outer side, feet to the
 // aisle. Bench x is the row's first column plus `step` per slot. `mult` multiplies every
-// rep; `rebirths` unlocks it, `robux` sells it. aura picks the effect in gym.js.
+// rep; `rebirths` unlocks it, `coins` sells it (a one-time buy). aura picks the effect in gym.js.
 export const GYM = {
   border: { x0: 30, x1: 73, z0: 0, z1: 32 },
   bay: { width: 7.2, length: 9, line: 0.26 },
@@ -140,7 +145,7 @@ export const GYM = {
     { id: 'r9', mult: 9, rebirths: 9, pad: '#b01ce8', padGlow: 1.7, rim: '#c42cff', face: '#35105a', plateR: 0.8, row: 1, slot: 0, aura: { kind: 'violet', rate: 60, c1: '#f0dcff', c2: '#a43cff', swirl: 1.1, bolts: 4 } },
     { id: 'r18', mult: 18, rebirths: 18, pad: '#ff8a10', padGlow: 1.8, rim: '#ffb01a', face: '#3a2208', plateR: 0.84, row: 1, slot: 1, aura: { kind: 'fire', rate: 62, c1: '#ffe36a', c2: '#ff7a10', swirl: 1 } },
     { id: 'r36', mult: 36, rebirths: 36, pad: '#f0101c', padGlow: 2, rim: '#ff1a24', face: '#1a0608', plateR: 0.92, row: 1, slot: 2, aura: { kind: 'crimson', rate: 66, c1: '#ff5a30', c2: '#e00818', swirl: 1.3, bolts: 2 } },
-    { id: 'admin', title: 'ADMIN', mult: 200, robux: 2499, rainbow: true, plateR: 0.98, row: 1, slot: 3, aura: { kind: 'rainbow', rate: 76, c1: '#7dff5a', c2: '#c040ff', swirl: 1.2, bolts: 3 } },
+    { id: 'admin', title: 'ADMIN', mult: 200, coins: 2000000, rainbow: true, plateR: 0.98, row: 1, slot: 3, aura: { kind: 'rainbow', rate: 76, c1: '#7dff5a', c2: '#c040ff', swirl: 1.2, bolts: 3 } },
   ],
   baseGain: 1.5, // Strength per half rep before the bench and the multiplier
   gainEvery: 0.3, // s: one gain at the top of each press and one at the bottom
@@ -228,6 +233,82 @@ export const LIGHT = {
   sunDistance: 170, // m the shadow camera stands off along the sun's direction
   lampColor: '#ffb35c',
   lampDistance: 22,
+}
+
+// --- Worlds (theme.js, worlds.js; backend WORLDS) -------------------------------------
+// The same game in another look: one map, one set of colliders, recoloured in place. Each world has
+// its own rail, train and players on the server. `rebirths` is what entering takes (keep it equal to the
+// backend's). `looks` overrides a surface by the key it was registered with (themeMaterial / themeColors),
+// and a look with a, b repaints that lego surface; the portal shows the world it leads to.
+const GALAXY_MOOD = { sunElevation: 58, sunAzimuth: 28, lampIntensity: 0, stars: 1 }
+export const WORLD_TRAVEL = { fadeMs: 340, holdMs: 200 } // the warp hides the swap: fade in, hold, fade out
+export const DEFAULT_WORLD = 'main'
+export const WORLDS = {
+  main: {
+    id: 'main',
+    name: 'Main World',
+    title: 'MAIN WORLD',
+    subtitle: 'BACK ON SOLID GROUND',
+    rebirths: 0,
+    sky: TIME_OF_DAY,
+    clouds: true,
+    ambience: 'earth',
+    // Where this world's portal leads, and how it reads.
+    portal: { to: 'galaxy', sub: '36 REBIRTHS', colors: ['#ff7af0', '#b325ff'], subColors: ['#ff5cf2', '#a020f0'], outline: '#1d0a3a', deep: [0.2, 0.03, 0.55], mid: [1, 0.5, 0.95], pale: [1, 0.92, 1] },
+    looks: {},
+  },
+  galaxy: {
+    id: 'galaxy',
+    name: 'Galaxy World',
+    title: 'GALAXY WORLD',
+    subtitle: 'ONLY THE STRONGEST MAKE IT HERE',
+    rebirths: 36,
+    sky: {
+      day: { ...GALAXY_MOOD, zenith: '#0a0638', horizon: '#3c1c86', sunColor: '#dfe2ff', sunIntensity: 1.8, hemiSky: '#c9c4ff', hemiGround: '#5a48b4', hemiIntensity: 1.7, envIntensity: 0.6, exposure: 1, nebula: 1 },
+      night: { ...GALAXY_MOOD, zenith: '#02010f', horizon: '#150a3c', sunColor: '#8fa4ff', sunIntensity: 1, sunElevation: 38, sunAzimuth: -60, hemiSky: '#6a64c8', hemiGround: '#221a58', hemiIntensity: 0.95, envIntensity: 0.3, exposure: 1.1, nebula: 0.7 },
+      // Painted once into the sky (paintNebula): soft clouds of colour, the galaxy's band, the stars.
+      nebula: {
+        seed: 1981,
+        clouds: 34,
+        colors: ['#ff2fb4', '#7a2cff', '#2a5cff', '#17d6ff', '#c02cff'],
+        band: { tilt: 0.42, color: '#d9c8ff' },
+        stars: 2600,
+      },
+    },
+    clouds: false,
+    ambience: 'space',
+    stardust: { rate: 16, reach: 30, height: 15, kinds: ['violet', 'cyan', 'magic'] }, // specks drifting round the player
+    planets: [
+      { x: -300, y: 190, z: -330, r: 92, tilt: 0.3, seed: 11, bands: ['#f4c27a', '#d9824a', '#f7dcae', '#b4552e', '#eeb36a'], ring: { color: '#ffe0b0', inner: 1.4, outer: 2.3, tiltX: 1.2, tiltY: 0.3 } },
+      { x: 360, y: 150, z: -240, r: 56, tilt: -0.2, seed: 23, bands: ['#2ad1ff', '#1a6cf0', '#7ff0ff', '#1440b8'] },
+      { x: 300, y: 250, z: 340, r: 38, tilt: 0.5, seed: 37, bands: ['#ff6fb1', '#c02a8c', '#ffb0d8', '#7a1a78'] },
+      { x: -380, y: 110, z: 300, r: 28, tilt: 0.1, seed: 41, bands: ['#b9bdd0', '#7f8399', '#dfe2ee', '#5d6078'] },
+    ],
+    belt: { count: 150, inner: 325, outer: 430, low: 40, high: 140, size: [2, 9], spin: 0.012, color: '#6c62a8' },
+    portal: { to: 'main', sub: 'GO BACK', colors: ['#a4ffcf', '#1fd68a'], subColors: ['#ffffff', '#a4ffcf'], outline: '#04291c', deep: [0.02, 0.2, 0.4], mid: [0.15, 0.85, 0.6], pale: [0.9, 1, 0.95] },
+    looks: {
+      lawn: { a: '#140c46', b: '#1c1260' },
+      terraceTop: { hue: 0.8, sat: 0.72, light: 1 },
+      terraceWall: { a: '#22155e', b: '#31207e', emissiveIntensity: 0.42 },
+      mountain: { hue: 0.54, sat: 1, light: 0.82 },
+      ties: { color: '#7a6cc4' },
+      chevron: { arrow: '#69e6ff' },
+      bayLine: { color: '#8fe0ff' },
+      portalRing: { color: '#5dffbc' },
+      chestRing: { color: '#ffd93a' },
+      trunkA: { color: '#2c2268', emissive: '#3b1fa8', emissiveIntensity: 0.5 },
+      trunkB: { color: '#3b2c84', emissive: '#4a24c4', emissiveIntensity: 0.5 },
+      leafA: { color: '#1ce6d4', emissive: '#0bb5a8', emissiveIntensity: 0.75 },
+      leafB: { color: '#ff5fd6', emissive: '#c81fa0', emissiveIntensity: 0.75 },
+      bush: { a: '#c026d3', b: '#d946ef' },
+      teal: { a: '#22d3ee', b: '#38bdf8' },
+      stub: { color: '#47309c' },
+      rock: { color: '#8b7fd8' },
+      tuft: { color: '#3fe8ff', emissive: '#12a5c4', emissiveIntensity: 0.6 },
+      flower: { color: '#7dffef', emissive: '#27d8c4', emissiveIntensity: 0.8 },
+      pinkFlower: { color: '#ff8af0', emissive: '#e23fd0', emissiveIntensity: 0.8 },
+    },
+  },
 }
 
 // Default (fallback) character look, used only when player.glb cannot load.
@@ -337,7 +418,7 @@ export const NET = {
 export const BOARDS = [
   { id: 'rebirths', label: 'Rebirths', stat: 'rebirths', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
   { id: 'breaks', label: 'Trains Derailed', stat: 'breaks', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
-  { id: 'robux', label: 'Robux Spent', stat: 'robux', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
+  { id: 'strength', label: 'Strength', stat: 'strength', order: 'desc', mode: 'best', format: 'compact', reset: 'none' },
 ]
 
 // Rewarded ads (Legion.SDK.ads). Placement names: lowercase letters, digits and hyphens only.
@@ -472,7 +553,7 @@ export const FONT_FAMILY = 'Fredoka'
 export const ROUND = {
   countdown: 90, // s between trains
   firstCountdown: 79, // s before the very first train
-  seedVehicles: 8, // parked on the rail in a brand-new lobby so the first train has a target
+  seedVehicles: 0, // parked on the rail in a brand-new lobby (none: the rail starts empty)
   warnSeconds: 6, // the last seconds tick, and the rails start to hum
   approachSeconds: 2.6, // s the train rumbles inside the tunnel before it shows
   wreckSeconds: 11, // s a derailed train burns before it is cleared away
@@ -499,25 +580,25 @@ export const TRAINS = [
 
 // Progress (progress.js). A new save starts at these numbers. `power` is the player's Strength.
 export const PROGRESS = {
-  storageKey: 'stop-the-train.save.v1',
-  start: { power: 1920, coins: 1930, luck: 30, multiplier: 4, rebirths: 3 },
+  start: { power: 1, coins: 0, luck: 0, multiplier: 1, rebirths: 0 },
   saveEvery: 2, // s between saves while Strength streams in from training
   offlineRatePerHour: 0.01, // of current power
   offlineCapHours: 24,
+  offlineMinSeconds: 60, // shorter absences pay nothing and show no window
   dailyCooldown: 24 * 3600, // s
   updateCountdown: 5 * 86400 + 1 * 3600 + 10 * 60 + 49, // s the NEW UPDATE sign counts down
 }
 
 // Upgrade stall rows (the UPGRADES! window). level = start at a new save; the value shown is
-// v0 + step * level, `fmt` writes it. Coin cost = cost * grow^(level - start); `robux` is the Robux price.
-// wired: magnet (coin pull radius), walkspeed (player.speedScale), cooldown (the chest). carry and
-// fuse are saved but wait for carrying more than one and for the Fuse Machine.
+// v0 + step * level, `fmt` writes it. Coin cost = cost * grow^(level - start). Upgrades are coins only; the first-level costs keep Magnet's 65 coins = 9 Robux (about 7.2 coins per Robux) as the yardstick.
+// wired: magnet (coin pull radius), walkspeed (player.speedScale), cooldown (the chest), carry (how
+// many vehicles are stacked in the hands; its value is the level). fuse is saved but waits for the Fuse Machine.
 export const UPGRADES = [
-  { id: 'magnet', title: 'MAGNET', art: 'magnet', c1: '#f5292c', c2: '#c60d12', start: 1, max: 20, v0: 4, step: 1, fmt: (v) => `${v} Radius`, cost: 65, grow: 1.5, robux: 9 },
-  { id: 'carry', title: 'CARRY', art: 'carry', c1: '#d20ffb', c2: '#6207dc', start: 1, max: 5, v0: 1, step: 1, fmt: (v) => `${v} Carry Capacity`, cost: 7500, grow: 3, robux: 99 },
-  { id: 'cooldown', title: 'COOLDOWN', art: 'hourglass', c1: '#86fe11', c2: '#4cd80a', start: 0, max: 25, v0: 0, step: 2, fmt: (v) => `${v}% less Cooldown`, cost: 90, grow: 1.4, robux: 19 },
-  { id: 'fuse', title: 'FUSE CD', art: 'fuse', c1: '#5a5af0', c2: '#ffff5a', horizontal: true, start: 0, max: 25, v0: 0, step: 2, fmt: (v) => `${v}% less Cooldown`, cost: 750, grow: 1.5, robux: 29 },
-  { id: 'walkspeed', title: 'WALKSPEED', art: 'shoe', c1: '#18d4ff', c2: '#0a98f0', caps: true, start: 4, max: 20, v0: 16, step: 2, fmt: (v) => `${v} WALKSPEED`, cost: 795, grow: 1.35, robux: 9 },
+  { id: 'magnet', title: 'MAGNET', art: 'magnet', c1: '#f5292c', c2: '#c60d12', start: 1, max: 20, v0: 4, step: 1, fmt: (v) => `${v} Radius`, cost: 65, grow: 1.5 },
+  { id: 'carry', title: 'CARRY', art: 'carry', c1: '#d20ffb', c2: '#6207dc', start: 1, max: 5, v0: 0, step: 1, fmt: (v) => `${v} Carry Capacity`, cost: 715, grow: 3 },
+  { id: 'cooldown', title: 'COOLDOWN', art: 'hourglass', c1: '#86fe11', c2: '#4cd80a', start: 0, max: 25, v0: 0, step: 2, fmt: (v) => `${v}% less Cooldown`, cost: 140, grow: 1.4 },
+  { id: 'fuse', title: 'FUSE CD', art: 'fuse', c1: '#5a5af0', c2: '#ffff5a', horizontal: true, start: 0, max: 25, v0: 0, step: 2, fmt: (v) => `${v}% less Cooldown`, cost: 210, grow: 1.5 },
+  { id: 'walkspeed', title: 'WALKSPEED', art: 'shoe', c1: '#18d4ff', c2: '#0a98f0', caps: true, start: 4, max: 20, v0: 16, step: 2, fmt: (v) => `${v} WALKSPEED`, cost: 65, grow: 1.35 },
 ]
 // The Fuse Machine: bring `slots` vehicles to its pad and insert them one by one (E), then pay
 // `cost` coins for a chance (the player's Luck %) at one vehicle with all their HP added up.
@@ -539,7 +620,9 @@ export const DAILY = [
   { kind: 'coins', n: 3.5e6, text: '3.5M' },
   { kind: 'powerMult', n: 5, text: 'x5 POWER', sub: 'PERMANENT', tag: 'OP!' },
 ]
-export const REBIRTH = { base: 2200, grow: 1.6, startPower: 1000, luck: 10, skipRobux: 49, portal: 36 } // Strength for the next rebirth; +1 multiplier, +luck
+export const REBIRTH = { base: 2200, grow: 1.6, startPower: 1000, luck: 10, skipCoins: 20000 } // Strength for the next rebirth; +1 multiplier, +luck. skipCoins: rebirth without the Strength reset
+// Store: one-time coin buys (saved as levels[id] = 1). power2: every rep gains `mult` times more.
+export const SHOP = { power2: { coins: 80000, mult: 2 } }
 
 // Coins dropped by a smashed vehicle (coins.js). Each cluster is worth this share of its HP, times the multiplier. magnetScale: world units per Magnet radius.
 export const COINS = { perCluster: 7, valueShare: 0.4, magnetScale: 1.4, pickup: 1.6, life: 40, max: 70 }
@@ -557,7 +640,6 @@ export const FX = {
 // --- Audio (audio/) ------------------------------------------------------------
 export const AUDIO = {
   volume: 0.85,
-  storageKey: 'stop-the-train.sound',
   buses: { ui: 0.8, sfx: 1, amb: 0.5, engine: 0.75 },
   duck: 0.5, // world level while a window is open
   maxVoices: 64,

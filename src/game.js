@@ -1,19 +1,14 @@
 import { Vector3 } from 'three'
 import { ADS, COINS, ROUND, SET, TRAINS, VARIANTS, YARD } from './config.js'
-import { addBreak, addCoins, compact, state as progress, updateLeft } from './progress.js'
+import { addBreak, addCoins, compact, state as progress } from './progress.js'
 import { player } from './player.js'
 import * as bloxity from './bloxity.js'
 import { addShake } from './camera.js'
 
 // The round loop: a countdown, a train, its wreck, the next train. A train that gets
-// through keeps its damage and comes back; a train brought to 0 HP derails and pays out.
+// through keeps its damage and comes back, paying nothing; a train brought to 0 HP derails and
+// pays out, the coins of every hit of that pass included.
 const pos = new Vector3()
-
-function clockFull(s) {
-  const t = Math.max(0, Math.floor(s))
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(Math.floor(t / 86400))}:${p(Math.floor(t / 3600) % 24)}:${p(Math.floor(t / 60) % 60)}:${p(t % 60)}`
-}
 
 function weightedTrain() {
   const luck = 1 + progress.luck / 100
@@ -49,6 +44,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     slow: 0,
     lastSecond: 0,
     humCd: 0,
+    shared: false, // the server runs the round (shared.js): one rail and one train for the whole room
   }
   lobby.setRarity(g.spec)
 
@@ -58,9 +54,21 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     addShake(k / (1 + (d / 50) ** 2))
   }
 
+  // The coins of this pass's hits: they burst out of the wrecks if the train derails and are lost
+  // if it gets through. Merged down to what the coin pool can show at once.
+  const owed = []
+  const payOwed = () => {
+    const room = Math.floor(COINS.max / COINS.perCluster)
+    const piles = owed.splice(0)
+    piles.slice(room).forEach((o, i) => (piles[i % room].value += o.value))
+    for (const o of piles.slice(0, room)) coins.spawn(o.x, o.z, o.value)
+  }
+
   const hooks = {
+    shared: () => g.shared,
     nextVehicle: (front) => rail.nextAt(front),
-    onHit(v, damage, t, speed) {
+    // `mine`: the coins of a hit go to the player whose vehicle it was (everyone in local play).
+    onHit(v, damage, t, speed, mine = true) {
       const p = v.vehicle.root.position
       pos.set(p.x, p.y + 2.2, p.z)
       hud.floater(pos, `-${compact(damage)} HP`)
@@ -68,21 +76,26 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
       hud.setTrainHp(t.hp, t.maxHp)
       g.hp = t.hp
       shakeFrom(p.x, p.z, 0.3)
+      if (!mine) return
       const value = Math.ceil(damage * COINS.valueShare * progress.multiplier)
       const lucky = Math.random() < progress.luck / 100
-      coins.spawn(p.x, p.z, lucky ? value * 2 : value)
+      owed.push({ x: p.x, z: p.z, value: lucky ? value * 2 : value })
     },
-    onDerail(t) {
+    // `rewarded`: this player's vehicles were in the pile that stopped it (always, in local play).
+    onDerail(t, rewarded = true) {
       g.slow = ROUND.slowMo.seconds
       g.hp = 0
       hud.setTrainHp(0, t.maxHp)
       hud.flash(0.7)
       addShake(1)
       const reward = t.spec.reward * (g.doubled ? 2 : 1)
-      addCoins(reward)
-      addBreak()
-      hud.showBanner('TRAIN STOPPED!', `+${compact(reward)} COINS`, 4200)
-      hud.coinBurst(26)
+      if (rewarded) {
+        addCoins(reward)
+        payOwed()
+        addBreak()
+        hud.showBanner('TRAIN STOPPED!', `+${compact(reward)} COINS`, 4200)
+        hud.coinBurst(26)
+      } else hud.showBanner('TRAIN STOPPED!', 'THE TEAM DID IT! PARK A VEHICLE NEXT TIME TO SHARE THE REWARD', 4200)
       sound.victory()
       showResultsAd()
     },
@@ -91,7 +104,14 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
       hud.flash(0.28 * big)
     },
     onGone(result) {
+      owed.length = 0
       rail.sweep()
+      if (g.shared) {
+        // The server decides what comes next (shared.js `gone`); this is only the clean-up.
+        if (result === 'stopped') fx.fadeDecals()
+        g.phase = 'countdown'
+        return
+      }
       if (result === 'stopped') {
         g.spec = weightedTrain()
         g.hp = g.spec.hp
@@ -100,8 +120,8 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
         fx.fadeDecals()
       } else {
         g.back = true
-        hud.showBanner('THE TRAIN GOT THROUGH!', `${compact(g.hp)} HP LEFT. PARK MORE VEHICLES!`, 3400)
-        sound.failed()
+        hud.showBanner('THE TRAIN GOT THROUGH!', `NO COINS! ${compact(g.hp)} HP LEFT. PARK MORE VEHICLES!`, 4200)
+        sound.trainLost()
       }
       lobby.setRarity(g.spec)
       g.phase = 'countdown'
@@ -109,10 +129,10 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     },
   }
 
-  function startTrain() {
+  function startTrain(head) {
     g.phase = 'train'
     hud.showTrain(g.spec, g.hp, g.spec.reward * (g.doubled ? 2 : 1))
-    trains.spawn(g.spec, g.hp)
+    trains.spawn(g.spec, g.hp, head)
   }
 
   function update(dt) {
@@ -144,9 +164,8 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
         }
         rail.rumble((ROUND.warnSeconds - s + 1) / ROUND.warnSeconds)
       }
-      if (g.left <= 0) startTrain()
+      if (g.left <= 0 && !g.shared) startTrain()
     }
-    lobby.setUpdateTimer(clockFull(updateLeft()))
   }
 
   // The lobby's first vehicles, so the first train has something to hit.
@@ -160,5 +179,23 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
     })
   }
 
-  return { g, hooks, update, seed, startTrain }
+  // A new world: a brand-new lobby's round, until the server sends that world's (shared.js).
+  function restart() {
+    owed.length = 0
+    Object.assign(g, { phase: 'countdown', left: ROUND.firstCountdown, spec: TRAINS[0], hp: TRAINS[0].hp, back: false, doubled: true, timeScale: 1, slow: 0, shared: false })
+    lobby.setRarity(g.spec)
+    seed()
+  }
+
+  // The server's state of the round (shared.js), applied when a train is picked or has gone.
+  function apply(snap, spec) {
+    g.spec = spec
+    g.hp = snap.hp
+    g.back = snap.back
+    g.doubled = snap.doubled
+    g.left = snap.left
+    lobby.setRarity(spec)
+  }
+
+  return { g, hooks, update, seed, restart, startTrain, apply }
 }

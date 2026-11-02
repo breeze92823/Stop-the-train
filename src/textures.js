@@ -822,6 +822,77 @@ export function paintTerrace({ a = '#b65a2a', b = '#cf7238', size = 512 } = {}) 
   return { color: c, normal: heightToNormal(h, size, 1.2) }
 }
 
+// The Galaxy's sky as an equirectangular map, added on top of the sky gradient (black adds nothing).
+// Clouds of colour wrap round the seam, a pale band crosses the sky, and every star is a dot.
+export function paintNebula({ seed, clouds, colors, band, stars }, w = 2048, h = 1024) {
+  const rand = mulberry32(seed)
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  const ctx = c.getContext('2d')
+  ctx.fillStyle = '#000000'
+  ctx.fillRect(0, 0, w, h)
+  ctx.globalCompositeOperation = 'lighter'
+  const blob = (x, y, r, color, alpha) => {
+    const [cr, cg, cb] = hexRgb(color)
+    for (const ox of [-w, 0, w]) {
+      const g = ctx.createRadialGradient(x + ox, y, 0, x + ox, y, r)
+      g.addColorStop(0, `rgba(${cr},${cg},${cb},${alpha})`)
+      g.addColorStop(0.5, `rgba(${cr},${cg},${cb},${alpha * 0.34})`)
+      g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`)
+      ctx.fillStyle = g
+      ctx.fillRect(x + ox - r, y - r, r * 2, r * 2)
+    }
+  }
+  const bandY = (x) => h * (0.42 + Math.sin((x / w) * Math.PI * 2) * band.tilt * 0.32)
+  // Most of the colour hangs along the band; the rest is scattered over the sky.
+  for (let i = 0; i < clouds; i++) {
+    const x = rand() * w
+    const y = i % 3 ? bandY(x) + (rand() - 0.5) * h * 0.26 : rand() * h * 0.62
+    blob(x, y, h * (0.1 + rand() * 0.24), colors[i % colors.length], 0.2 + rand() * 0.22)
+  }
+  for (let i = 0; i < 110; i++) {
+    const x = rand() * w
+    blob(x, bandY(x) + (rand() - 0.5) * h * 0.07, h * (0.02 + rand() * 0.05), band.color, 0.05 + rand() * 0.09)
+  }
+  for (let i = 0; i < stars; i++) {
+    const x = rand() * w
+    // Twice as thick along the band, as the real thing.
+    const y = i % 2 ? bandY(x) + (rand() - 0.5) * h * 0.2 : rand() * h * 0.7
+    const big = rand() < 0.03
+    ctx.fillStyle = `rgba(255,${235 + Math.floor(rand() * 20)},255,${big ? 1 : 0.25 + rand() * 0.6})`
+    ctx.fillRect(x, y, big ? 2.4 : 1.2, big ? 2.4 : 1.2)
+    if (big) blob(x + 1, y + 1, 9, '#c8d8ff', 0.5)
+  }
+  return c
+}
+
+// A gas giant: soft bands round its latitude, wavering a little.
+export function paintPlanet(bands, seed, w = 512, h = 256) {
+  const rand = mulberry32(seed)
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  const ctx = c.getContext('2d')
+  const g = ctx.createLinearGradient(0, 0, 0, h)
+  const stops = 14
+  for (let i = 0; i <= stops; i++) g.addColorStop(i / stops, bands[Math.floor(rand() * bands.length)])
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, w, h)
+  for (let i = 0; i < 420; i++) {
+    ctx.fillStyle = bands[Math.floor(rand() * bands.length)]
+    ctx.globalAlpha = 0.05 + rand() * 0.16
+    const len = 40 + rand() * 190
+    const x = rand() * w
+    const y = rand() * h
+    const t = 1 + rand() * 5
+    ctx.fillRect(x, y, len, t)
+    ctx.fillRect(x - w, y, len, t) // across the seam
+  }
+  ctx.globalAlpha = 1
+  return c
+}
+
 // Soft cloud puffs in a 2x2 atlas: fbm eaten away by a radial falloff (alpha in A).
 export function paintPuffAtlas(size = 256) {
   const c = canvas(size)

@@ -26,7 +26,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { GYM, SET } from './config.js'
 import { player, resetPlayer } from './player.js'
 import { syncYawToPlayer } from './camera.js'
-import { addPower, state as progress } from './progress.js'
+import { addPower, buyShop, compact, owns, powerBoost, shopPrice, state as progress } from './progress.js'
 import { fontReady, paintRainbow, solidBox } from './propkit.js'
 import { drawBicep } from './yard.js'
 
@@ -81,17 +81,17 @@ function benchLabel(cfg) {
   const tex = new CanvasTexture(c)
   tex.colorSpace = SRGBColorSpace
   const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false }))
-  const scale = cfg.robux ? 9.4 : 7
+  const scale = cfg.coins ? 9.4 : 7
   sprite.scale.set(scale, (scale * 520) / 720, 1)
   const draw = () => {
     const ctx = c.getContext('2d')
     ctx.clearRect(0, 0, 720, 520)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    if (cfg.robux) {
+    if (cfg.coins) {
       paintRainbow(ctx, cfg.title, 360, 120, 150, RAINBOW, '#16100a')
       paintRainbow(ctx, `x${cfg.mult} POWER`, 360, 280, 96, ['#7dff5a', '#fff36a', '#ff5cf2', '#ff8a1e'], '#16100a')
-      line(ctx, String(cfg.robux), 360, 410, 92, ['#ffe36b', '#ff2a10'], '#16100a')
+      line(ctx, owns(cfg.id) ? 'OWNED' : compact(cfg.coins), 360, 410, 92, ['#ffe36b', '#ff2a10'], '#16100a')
       return
     }
     if (cfg.title) {
@@ -108,6 +108,10 @@ function benchLabel(cfg) {
     draw()
     tex.needsUpdate = true
   })
+  sprite.userData.redraw = () => {
+    draw()
+    tex.needsUpdate = true
+  }
   return sprite
 }
 
@@ -350,7 +354,7 @@ export function createGym(scene, fx, sound, hud) {
     root.add(bar)
     b.bar = bar
     const sign = benchLabel(cfg)
-    sign.position.set(b.x, cfg.robux ? 6.6 : 5.6, b.z + b.dir * -0.4)
+    sign.position.set(b.x, cfg.coins ? 6.6 : 5.6, b.z + b.dir * -0.4)
     root.add(sign)
     b.sign = sign
     const A = cfg.aura
@@ -491,7 +495,7 @@ export function createGym(scene, fx, sound, hud) {
   // --- Training --------------------------------------------------------------------------
   const t = { bench: null, stage: 'none', k: 0, phase: 0.5, reps: 0, from: new Vector3(), spot: new Vector3(), yawFrom: 0 }
   const anim = { w: 0, rep: 1 }
-  const gainOf = (b) => Math.round(GYM.baseGain * b.cfg.mult * progress.multiplier * progress.powerMult)
+  const gainOf = (b) => Math.round(GYM.baseGain * b.cfg.mult * progress.multiplier * progress.powerMult * powerBoost())
   const active = () => t.bench !== null
   let crackleCd = 1
 
@@ -640,8 +644,25 @@ export function createGym(scene, fx, sound, hud) {
     if (!best) return null
     const { cfg } = best
     const base = { bay: best, x: best.x, y: 3.1, z: best.z }
-    if (cfg.robux) return { ...base, kind: 'bench-buy', text: `${cfg.robux} Robux`, act: () => hud.openWindow('store') }
-    if (progress.rebirths < cfg.rebirths) {
+    if (cfg.coins && !owns(cfg.id)) {
+      return {
+        ...base,
+        kind: 'bench-buy',
+        text: `Buy ${compact(shopPrice(cfg.id))} Coins`,
+        instant: true,
+        act() {
+          if (buyShop(cfg.id)) {
+            sound.buy()
+            best.sign.userData.redraw()
+            hud.toast(`${cfg.title} bench unlocked!`)
+          } else {
+            sound.deny()
+            hud.toast(`You need ${compact(shopPrice(cfg.id))} coins for this bench`)
+          }
+        },
+      }
+    }
+    if (!cfg.coins && progress.rebirths < cfg.rebirths) {
       return {
         ...base,
         kind: 'bench-locked',
@@ -666,6 +687,10 @@ export function createGym(scene, fx, sound, hud) {
     for (const b of benches) {
       const d = Math.hypot(b.x - px, b.z - pz)
       b.near = d < GYM.auraReach
+      if (b.cfg.coins && b.owned !== owns(b.cfg.id)) {
+        b.owned = owns(b.cfg.id)
+        b.sign.userData.redraw()
+      }
       b.sign.visible = Math.hypot(d, b.sign.position.y - camera.position.y) > 7 // never a wall of text in the lens
       if (b.swirl) {
         b.swirl.visible = b.near

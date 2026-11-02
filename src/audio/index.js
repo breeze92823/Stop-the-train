@@ -540,6 +540,34 @@ export function failed() {
   for (const [d, f] of [[0, 330], [0.18, 277], [0.36, 220]]) tone({ t: t + d, type: 'triangle', f, f2: f * 0.97, d: 0.34, gain: 0.12, lp: 1400, verb: 0.3, bus: A.ui })
 }
 
+// The train got through: a slow piano lament over soft strings, A minor down to a lonely last A.
+const PIANO = [[1, 1, 2.2], [2, 0.38, 1.5], [3, 0.14, 0.9], [4, 0.07, 0.5], [5.02, 0.03, 0.3]]
+export function trainLost() {
+  if (!ready()) return
+  const bar = 1.15
+  const t = now() + 0.3
+  const chords = [
+    [110, 220, 261.6, 329.6], // Am
+    [87.3, 220, 261.6, 349.2], // F
+    [73.4, 220, 293.7, 349.2], // Dm
+    [82.4, 207.7, 246.9, 329.6], // E
+  ]
+  chords.forEach(([bass, ...notes], i) => {
+    const at = t + i * bar
+    modal({ t: at, f: bass, modes: PIANO, gain: 0.07, verb: 0.5, bus: A.ui })
+    for (const f of notes) {
+      for (const cents of [-6, 7]) tone({ t: at, type: 'sawtooth', f, a: 0.45, hold: bar - 0.45, d: 0.7, gain: 0.014, lp: 760, detune: cents, verb: 0.6, bus: A.ui })
+    }
+  })
+  // Two falling notes a bar: each one a sigh.
+  const tune = [659.3, 523.3, 698.5, 659.3, 587.3, 440, 493.9, 415.3]
+  tune.forEach((f, i) => modal({ t: t + (i * bar) / 2 + rnd(-0.012, 0.012), f, modes: PIANO, gain: i % 2 ? 0.075 : 0.1, strike: 0.01, verb: 0.55, bus: A.ui }))
+  // It comes to rest, thin and low, and fades on its own.
+  const end = t + bar * 4
+  for (const [f, g] of [[110, 0.07], [220, 0.06], [440, 0.09]]) modal({ t: end, f, modes: PIANO, decay: 1.5, gain: g, verb: 0.65, bus: A.ui })
+  for (const f of [220, 261.6]) tone({ t: end, type: 'sawtooth', f, a: 0.4, hold: 0.5, d: 1.8, gain: 0.014, lp: 620, verb: 0.65, bus: A.ui })
+}
+
 export function tick(n) {
   if (!ready()) return
   modal({ f: n <= 3 ? 1320 : 990, modes: [[1, 1, 0.08], [2.7, 0.4, 0.05]], gain: 0.14, strike: 0.2, bus: A.ui })
@@ -574,7 +602,58 @@ export function padEnter() {
   tone({ type: 'triangle', f: 440, f2: 880, d: 0.18, gain: 0.1, bus: A.ui })
 }
 
+// Stepping through the portal: air rushing in, a rising howl, and the drop out the other side.
+export function warp() {
+  if (!ready()) return
+  const t = now()
+  burst({ t, noise: 'pink', f: 260, f2: 5200, q: 0.8, a: 0.3, d: 0.42, gain: 0.5, verb: 0.5, bus: A.ui })
+  tone({ t, type: 'sawtooth', f: 60, f2: 720, a: 0.12, hold: 0.2, d: 0.32, gain: 0.1, lp: 1500, lpq: 5, verb: 0.4, bus: A.ui })
+  tone({ t, f: 180, f2: 1440, a: 0.1, hold: 0.2, d: 0.3, gain: 0.1, verb: 0.5, bus: A.ui })
+  const hit = t + 0.42
+  tone({ t: hit, f: 92, f2: 30, d: 0.8, gain: 0.5, verb: 0.6, bus: A.ui })
+  burst({ t: hit, noise: 'brown', type: 'lowpass', f: 900, f2: 120, a: 0.004, d: 0.6, gain: 0.5, verb: 0.6, bus: A.ui })
+  for (const [d, f] of [[0, 880], [0.09, 1319], [0.18, 1760], [0.27, 2637]]) tone({ t: hit + d, type: 'triangle', f, d: 0.5, gain: 0.05, verb: 0.7, bus: A.ui })
+}
+
 // --- Ambience -----------------------------------------------------------------------------------
+let ambience = 'earth' // what the air sounds like in this world: 'earth' | 'space'
+let breezeLevel = null
+let droneLevel = null
+function fadeAmbience(tc = 0.7) {
+  const t = A.ctx.currentTime
+  breezeLevel.gain.setTargetAtTime(ambience === 'earth' ? 1 : 0.16, t, tc)
+  droneLevel.gain.setTargetAtTime(ambience === 'space' ? 1 : 0, t, tc)
+}
+export function setAmbience(kind) {
+  ambience = kind
+  if (breezeLevel) fadeAmbience()
+}
+
+// The Galaxy's air: a slow, hollow chord that swells and sinks.
+function buildDrone(ctx) {
+  droneLevel = ctx.createGain()
+  droneLevel.gain.value = 0
+  const f = ctx.createBiquadFilter()
+  f.type = 'lowpass'
+  f.frequency.value = 420
+  const g = ctx.createGain()
+  g.gain.value = 0.05
+  f.connect(g).connect(droneLevel).connect(A.amb)
+  for (const hz of [55, 82.6, 110.4, 164.4]) {
+    const o = ctx.createOscillator()
+    o.type = 'triangle'
+    o.frequency.value = hz
+    o.connect(f)
+    o.start()
+  }
+  const l = ctx.createOscillator()
+  l.frequency.value = 0.09
+  const d = ctx.createGain()
+  d.gain.value = 0.022
+  l.connect(d).connect(g.gain)
+  l.start()
+}
+
 function buildAmbience(ctx) {
   const src = ctx.createBufferSource()
   src.buffer = A.noise.pinkStereo
@@ -585,7 +664,8 @@ function buildAmbience(ctx) {
   f.Q.value = 0.4
   const g = ctx.createGain()
   g.gain.value = 0.11
-  src.connect(f).connect(g).connect(A.amb)
+  breezeLevel = ctx.createGain()
+  src.connect(f).connect(g).connect(breezeLevel).connect(A.amb)
   src.start()
   // Breeze: the wind's level and pitch wander on two slow LFOs.
   for (const [rate, depth, param] of [[0.07, 180, f.frequency], [0.11, 0.05, g.gain]]) {
@@ -596,6 +676,8 @@ function buildAmbience(ctx) {
     l.connect(d).connect(param)
     l.start()
   }
+  buildDrone(ctx)
+  fadeAmbience(0.01)
 }
 onStart(buildAmbience)
 
@@ -611,7 +693,15 @@ function bird() {
   }
 }
 
-// Every frame: listener position, birdsong.
+// No birds in space: far-off glints, high and slow.
+function glint() {
+  const t = now()
+  const f = pick([1320, 1760, 1976, 2349, 2637])
+  const pan = rnd(-0.8, 0.8)
+  for (const [d, k] of [[0, 1], [0.16, 1.5]]) tone({ t: t + d, f: f * k, a: 0.04, d: 0.9, gain: 0.012, pan, verb: 0.8, bus: A.amb })
+}
+
+// Every frame: listener position, birdsong (or what the world has instead).
 export function updateAudio(dt, camera) {
   cam.pos.copy(camera.position)
   cam.right.setFromMatrixColumn(camera.matrixWorld, 0)
@@ -619,7 +709,8 @@ export function updateAudio(dt, camera) {
   birdCd -= dt
   if (birdCd <= 0) {
     birdCd = rnd(2.5, 9)
-    bird()
+    if (ambience === 'earth') bird()
+    else glint()
   }
 }
 

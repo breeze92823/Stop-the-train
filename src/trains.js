@@ -201,8 +201,9 @@ export function createTrains(scene, fx, sound, hooks) {
     return { group, body, model, axles, offset: 0, burning: null, roll: 0 }
   }
 
-  function spawn(spec, hp) {
-    const head = TRACK.mouth + spec.speed * ROUND.approachSeconds
+  // `at`: `startHead`: join a train that is already running (shared round) at this position.
+  function spawn(spec, hp, startHead) {
+    const head = startHead ?? TRACK.mouth + spec.speed * ROUND.approachSeconds
     const cars = []
     let at = head
     const list = ['loco', ...spec.wagons]
@@ -243,6 +244,25 @@ export function createTrains(scene, fx, sound, hooks) {
 
   const carSpeed = () => t.speed
 
+  // Shared round: the server's report of where the train is and how fast.
+  function netSync(head, speed) {
+    if (!t || t.state !== 'run') return
+    t.netHead = head
+    t.speed = speed
+  }
+  // The server's verdict on a hit: the train's HP and braking (the crash itself is hooks.onHit).
+  function netHit(hp, speed) {
+    if (!t || t.state !== 'run') return null
+    t.hp = hp
+    t.speed = speed
+    t.target = t.spec.speed * (0.48 + 0.52 * (hp / t.maxHp))
+    t.brake = 1
+    return t
+  }
+  const netDerail = () => t?.state === 'run' && derail()
+  // The server ended the wreck / the pass: wrap up here at once.
+  const netFinish = (result) => t && finish(result)
+
   function hitPlayer() {
     const p = player.position
     if (p.y > 6 || Math.abs(p.z - TRACK.z) > 3.2) return
@@ -256,13 +276,20 @@ export function createTrains(scene, fx, sound, hooks) {
     if (!t) return
     t.timer += dt
     if (t.state !== 'run') return
-    t.speed += Math.sign(t.target - t.speed) * Math.min(Math.abs(t.target - t.speed), 7 * dt)
+    const shared = hooks.shared?.()
+    // Shared round: the server owns speed, hits and HP; the head only eases toward its last report.
+    if (!shared) t.speed += Math.sign(t.target - t.speed) * Math.min(Math.abs(t.target - t.speed), 7 * dt)
     t.head -= t.speed * dt
+    if (shared && t.netHead != null) t.head += (t.netHead - t.head) * Math.min(1, 8 * dt)
     for (const c of t.cars) {
       c.roll += (t.speed * dt) / WHEEL_R
       c.body.setNextKinematicTranslation({ x: t.head + c.offset, y: TRACK.top + c.model.H / 2, z: TRACK.z })
     }
     hitPlayer()
+    if (shared) {
+      if (t.head + t.length < -TRACK.mouth - 6) finish('through')
+      return
+    }
     let v = hooks.nextVehicle(t.head)
     while (v) {
       const hp = t.hp
@@ -372,6 +399,15 @@ export function createTrains(scene, fx, sound, hooks) {
     hooks.onGone(result, done)
   }
 
+  // The player left this world: its train is simply gone, with no result to report.
+  function abort() {
+    if (!t) return
+    if (t.smoke) fx.removeEmitter(t.smoke)
+    if (t.aura) fx.removeEmitter(t.aura)
+    clear(false)
+    t = null
+  }
+
   // Per-frame: wheels, light, wreck sparks, the burn-down.
   function update(dt) {
     sound.trainTick(t, dt)
@@ -422,11 +458,16 @@ export function createTrains(scene, fx, sound, hooks) {
 
   return {
     spawn,
+    abort,
     update,
     get active() {
       return t
     },
     speed: carSpeed,
+    netSync,
+    netHit,
+    netDerail,
+    netFinish,
     // The first car's position, for the camera shake and sounds.
     frontX: () => (t ? t.cars[0].group.position.x : 0),
   }

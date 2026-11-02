@@ -2,6 +2,7 @@ import {
   BoxGeometry,
   CanvasTexture,
   CircleGeometry,
+  Color,
   CylinderGeometry,
   DodecahedronGeometry,
   DoubleSide,
@@ -22,32 +23,35 @@ import {
   Vector3,
 } from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { ADS, FUSE, LOBBY, MAILBOX_REACH, SET, TRACK } from './config.js'
+import { ADS, FUSE, LOBBY, MAILBOX_REACH, SET, TRACK, WORLDS } from './config.js'
 import { bake } from './bake.js'
 import * as bloxity from './bloxity.js'
 import { ICONS } from './hud.js'
 import { label, liveLabel, neon, put, rainbowLabel, solidBox, solidPole, std } from './propkit.js'
 import { chestLeft, claimChest, compact, onChange, refillChest, state as progress } from './progress.js'
-import { net, requestAdReward } from './net.js'
+import { claimChestOnServer, net, requestAdReward } from './net.js'
 import { player } from './player.js'
 import { mulberry32, paintHazard, paintLego, toTexture } from './textures.js'
+import { currentWorld, onTheme, themeMaterial } from './theme.js'
 import { dashedRect, terraceTop } from './world.js'
 import { makeVehicle, sharedMaterial, variantMaterial, vehicleModel } from './vehicles.js'
 
 // Everything standing on the lawn: the Upgrade stall and its NPC, the Fuse Machine, the
-// ADMIN ABUSE sign, the mailbox, the galaxy portal, trees, palms, rocks and the floating
+// FREE COINS chest, the mailbox, the galaxy portal, trees, palms, rocks and the floating
 // signs. Static meshes are baked to a handful of draw calls; what moves stays apart.
 
 const box = (w, h, d) => new BoxGeometry(w, h, d)
 
-function legoMat(a, b, tile = 4) {
+function legoMaps(a, b, tile) {
   const t = paintLego({ a, b, size: 256, perCell: 3, strength: 2.6 })
-  return new MeshStandardMaterial({
-    map: toTexture(t.color, { repeat: 1 / tile, srgb: true }),
-    normalMap: toTexture(t.normal, { repeat: 1 / tile }),
-    roughness: 0.6,
-  })
+  return { map: toTexture(t.color, { repeat: 1 / tile, srgb: true }), normalMap: toTexture(t.normal, { repeat: 1 / tile }) }
 }
+function legoMat(a, b, tile = 4) {
+  return new MeshStandardMaterial({ ...legoMaps(a, b, tile), roughness: 0.6 })
+}
+// Greenery in a world's own colours (config WORLDS looks).
+const themedLego = (key, a, b, tile) => themeMaterial(legoMat(a, b, tile), key, (look) => legoMaps(look.a, look.b, tile))
+const themedStd = (key, color, extra) => themeMaterial(std(color, extra), key)
 
 // The turning dashed rings on the lawn: n arcs in one mesh.
 function dashRing(r, width, n, fill, material) {
@@ -235,67 +239,6 @@ function buildFuse(root) {
   return { ring, cyan, count, trays }
 }
 
-// --- ADMIN ABUSE sign -----------------------------------------------------------------
-function adminScreen() {
-  const c = document.createElement('canvas')
-  c.width = 1024
-  c.height = 512
-  const draw = () => {
-    const ctx = c.getContext('2d')
-    const g = ctx.createLinearGradient(0, 0, 0, 512)
-    g.addColorStop(0, '#1b2a7a')
-    g.addColorStop(1, '#0e1650')
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, 1024, 512)
-    ctx.fillStyle = '#ffffff'
-    ctx.textAlign = 'center'
-    ctx.lineJoin = 'round'
-    ctx.font = 'italic 700 176px Fredoka, "Arial Black", sans-serif'
-    ctx.textBaseline = 'middle'
-    for (const [t, y] of [['ADMIN', 160], ['ABUSE', 352]]) {
-      ctx.lineWidth = 18
-      ctx.strokeStyle = '#0a0f33'
-      ctx.strokeText(t, 512, y)
-      ctx.fillText(t, 512, y)
-    }
-  }
-  draw()
-  const t = new CanvasTexture(c)
-  t.colorSpace = SRGBColorSpace
-  document.fonts?.load('italic 700 96px Fredoka').then(() => {
-    draw()
-    t.needsUpdate = true
-  }).catch(() => {})
-  return t
-}
-
-function buildAdmin(root) {
-  const { x, z, yaw } = SET.admin
-  const a = new Group()
-  a.position.set(x, 0, z)
-  a.rotation.y = yaw
-  const purple = legoMat('#6b5fd0', '#6256c6', 2)
-  const lilac = std('#c9b6f5')
-  put(a, legoBox(10.4, 0.34, 7.4), purple, 0, 0.17, 0)
-  put(a, box(10.8, 0.12, 7.8), lilac, 0, 0.06, 0)
-  put(a, legoBox(8.8, 0.5, 5.8), purple, 0, 0.56, 0)
-  const panel = new Group()
-  panel.position.set(0, 2.9, 0.1)
-  panel.rotation.x = -0.32
-  put(panel, box(8.8, 4.8, 0.5), std('#4e43b4'), 0, 0, -0.12)
-  put(panel, new PlaneGeometry(8.1, 4.1), new MeshStandardMaterial({ map: adminScreen(), roughness: 0.35, emissive: '#ffffff', emissiveIntensity: 0.25, emissiveMap: null }), 0, 0, 0.14, false)
-  a.add(panel)
-  settle(root, a)
-  solidBox(5.2, 2.6, 3.7, x, 2.6, z, yaw)
-
-  const update = label('NEW UPDATE', 1.5, { colors: [['#ff5cf2', '#a020f0']], outline: '#2a0a4a' })
-  update.position.set(x, 8.2, z)
-  const timer = liveLabel('05:01:10:49', 1.7, { color: '#ffffff', outline: '#0b0b12' })
-  timer.position.set(x, 6.8, z)
-  root.add(update, timer)
-  return { timer }
-}
-
 // --- Mailbox + portal + boards ------------------------------------------------------------
 function buildMailbox(root) {
   const { x, z } = SET.mailbox
@@ -328,6 +271,9 @@ function buildMailbox(root) {
 const PORTAL_FRAG = /* glsl */ `
   varying vec2 vUv;
   uniform float time;
+  uniform vec3 deep;
+  uniform vec3 pink;
+  uniform vec3 pale;
   void main() {
     vec2 p = vUv * 2.0 - 1.0;
     float r = length(p);
@@ -336,9 +282,6 @@ const PORTAL_FRAG = /* glsl */ `
     // Logarithmic arms: a galaxy winding in on itself.
     float arm = sin(a * 2.0 + log(r + 0.04) * 5.5 - time * 1.8) * 0.5 + 0.5;
     float fine = sin(a * 5.0 + log(r + 0.04) * 11.0 - time * 3.1) * 0.5 + 0.5;
-    vec3 deep = vec3(0.2, 0.03, 0.55);
-    vec3 pink = vec3(1.0, 0.5, 0.95);
-    vec3 pale = vec3(1.0, 0.92, 1.0);
     vec3 col = mix(deep, pink, smoothstep(0.25, 0.85, arm) * smoothstep(1.02, 0.25, r));
     col = mix(col, pale, pow(arm, 3.0) * (0.35 + fine * 0.65) * smoothstep(0.95, 0.2, r));
     col += pale * pow(max(0.0, 1.0 - r * 2.6), 2.0) * 1.6;
@@ -351,7 +294,7 @@ function buildPortal(root) {
   p.position.set(x, 4, z)
   p.rotation.y = yaw
   p.scale.setScalar(0.82)
-  const uniforms = { time: { value: 0 } }
+  const uniforms = { time: { value: 0 }, deep: { value: new Color() }, pink: { value: new Color() }, pale: { value: new Color() } }
   const disc = new Mesh(
     new CircleGeometry(3.5, 48),
     new ShaderMaterial({
@@ -384,14 +327,27 @@ function buildPortal(root) {
   p.add(shards)
   root.add(p)
   const ringCfg = SET.portal.ring
-  const ring = dashRing(ringCfg.r, 0.3, 4, 0.7, new MeshBasicMaterial({ color: '#1426e0', side: DoubleSide }))
+  const ring = dashRing(ringCfg.r, 0.3, 4, 0.7, themeMaterial(new MeshBasicMaterial({ color: '#1426e0', side: DoubleSide }), 'portalRing'))
   ring.position.set(ringCfg.x, 0.03, ringCfg.z)
   root.add(ring)
-  const a = label('GALAXY WORLD', 1.5, { colors: [['#ff7af0', '#b325ff']], outline: '#1d0a3a' })
+  // The portal shows the world it leads to.
+  let shown = currentWorld().portal
+  const titleOf = (look) => [WORLDS[look.to].title, { colors: [look.colors], outline: look.outline }]
+  const subOf = (look) => [look.sub, { colors: [look.subColors], outline: look.outline }]
+  const a = liveLabel(titleOf(shown)[0], 1.5, titleOf(shown)[1])
   a.position.set(x, 9.3, z)
-  const b = label('36 REBIRTHS', 1.3, { colors: [['#ff5cf2', '#a020f0']], outline: '#1d0a3a' })
+  const b = liveLabel(subOf(shown)[0], 1.3, subOf(shown)[1])
   b.position.set(x, 8, z)
   root.add(a, b)
+  onTheme(({ portal: look }) => {
+    uniforms.deep.value.setRGB(...look.deep)
+    uniforms.pink.value.setRGB(...look.mid)
+    uniforms.pale.value.setRGB(...look.pale)
+    if (look === shown) return
+    shown = look
+    a.setText(...titleOf(look))
+    b.setText(...subOf(look))
+  })
   return { uniforms, shards, items, ring, pos: new Vector3(ringCfg.x, 0, ringCfg.z), reach: ringCfg.r }
 }
 
@@ -512,7 +468,7 @@ function buildChest(root) {
   lid.rotation.x = -1.05
   g.add(lid)
   root.add(g)
-  const ring = dashRing(ringR, 0.16, 1, 0.999, new MeshBasicMaterial({ color: '#17101f', side: DoubleSide }))
+  const ring = dashRing(ringR, 0.16, 1, 0.999, themeMaterial(new MeshBasicMaterial({ color: '#17101f', side: DoubleSide }), 'chestRing'))
   ring.position.set(x, 0.03, z)
   root.add(ring)
   const title = rainbowLabel('FREE COINS!', 1.5, ['#3a6bff', '#7a3cff', '#d83cff', '#ff3fb4', '#ffffff', '#ffd23a', '#d8ff3a', '#7dff5a', '#3affd2', '#3ac8ff', '#3a6bff'])
@@ -594,12 +550,12 @@ function buildGreenery(root) {
   const g = new Group()
   const rand = mulberry32(77)
   const mats = {
-    trunkA: std('#a8622b'),
-    trunkB: std('#c07a3d'),
-    leafA: std('#1f9f47'),
-    leafB: std('#28b553'),
-    bush: legoMat('#1aa55a', '#22b264', 2),
-    stub: std('#d3612c'),
+    trunkA: themedStd('trunkA', '#a8622b'),
+    trunkB: themedStd('trunkB', '#c07a3d'),
+    leafA: themedStd('leafA', '#1f9f47'),
+    leafB: themedStd('leafB', '#28b553'),
+    bush: themedLego('bush', '#1aa55a', '#22b264', 2),
+    stub: themedStd('stub', '#d3612c'),
   }
   // Palms and block trees along the terrace tops (every side), never over the lawn.
   for (let i = 0; i < 70; i++) {
@@ -615,28 +571,28 @@ function buildGreenery(root) {
   for (const [x, z] of [[-50, -8], [-51, 52], [-72, -50], [-44, -50], [-12, -52], [24, -49], [58, -51], [-92, 66], [-64, 80], [-30, 78], [6, 80], [40, 78], [74, 78], [100, 40]]) topiary(g, x, z, mats)
 
   // Pale rocks and teal block bushes scattered about.
-  const rock = std('#b9d3e6', { roughness: 0.75 })
+  const rock = themedStd('rock', '#b9d3e6', { roughness: 0.75 })
   for (const [x, z, s] of [[-8, -46, 1.4], [38, -47, 1], [66, -46, 1.6], [-62, -46, 1.1], [-44, 78, 1.2], [18, 74, 1.3], [-22, 72, 0.9]]) {
     const m = put(g, new DodecahedronGeometry(s * 1.1, 0), rock, x, s * 0.6, z, false)
     m.rotation.set(rand(), rand(), rand())
     m.scale.y = 0.7
   }
-  const teal = legoMat('#37cfa4', '#2fc29a', 2)
+  const teal = themedLego('teal', '#37cfa4', '#2fc29a', 2)
   for (const [x, z, n] of [[16, 37, 4], [-9, 37, 3], [22, 33, 3], [54, 40, 3]]) {
     for (let i = 0; i < n; i++) {
       put(g, legoBox(2.4, 1.2, 2.4), teal, x + (i % 2) * 1.9 - 0.9, 0.6 + (i > 1 ? 1.2 : 0), z + (i % 3) * 0.8, false)
     }
   }
-  const tuft = std('#128a47')
+  const tuft = themedStd('tuft', '#128a47')
   for (let i = 0; i < 26; i++) {
     const x = (rand() - 0.5) * 200
     const z = -58 + rand() * 18
     for (let j = 0; j < 3; j++) put(g, box(0.28, 0.6 + rand() * 0.5, 0.28), tuft, x + (j - 1) * 0.42, 0.3, z + (rand() - 0.5) * 0.4, false)
   }
   // Flowers and gold bars on the terraces.
-  const flower = std('#ffd93b')
+  const flower = themedStd('flower', '#ffd93b')
   const gold = std('#f7c531', { metalness: 0.7, roughness: 0.35 })
-  const pinkFlower = std('#ff6fb1')
+  const pinkFlower = themedStd('pinkFlower', '#ff6fb1')
   for (let i = 0; i < 80; i++) {
     const a = rand() * Math.PI * 2
     const x = Math.cos(a) * 150 * (0.9 + rand() * 0.5)
@@ -732,7 +688,6 @@ export function createLobby(scene, fx, sound) {
   scene.add(staticRoot)
   const stall = buildStall(staticRoot)
   const fuse = buildFuse(staticRoot)
-  const admin = buildAdmin(staticRoot)
   const mailbox = buildMailbox(staticRoot)
   const portal = buildPortal(staticRoot)
   const boards = buildBoards(staticRoot)
@@ -790,7 +745,7 @@ export function createLobby(scene, fx, sound) {
   rarity.position.set(b.x, b.y - 6.4, b.z)
   staticRoot.add(cur, rarity)
 
-  // West effects: the void pouring into the portal, steam off the machine, glitter off the chest.
+  // Effects: the void pouring into the portal, steam off the machine, glitter off the chest.
   const nearPlayer = (x, z, reach) => Math.hypot(player.position.x - x, player.position.z - z) < reach
   const pr = { x: SET.portal.x, y: 4, z: SET.portal.z, sin: Math.sin(SET.portal.yaw), cos: Math.cos(SET.portal.yaw) }
   fx.addEmitter({
@@ -837,6 +792,19 @@ export function createLobby(scene, fx, sound) {
     tick(p, n) {
       if (chestLeft() > 0 || !nearPlayer(ch.x, ch.z, 70)) return
       for (let i = 0; i < n; i++) fx.sparkle(p.set(ch.x, chest.g.position.y + 0.8, ch.z), 'gold', 1.5)
+    },
+  })
+
+  // A world's own air: the Galaxy's stardust drifts round wherever the player is.
+  fx.addEmitter({
+    rate: WORLDS.galaxy.stardust.rate,
+    tick(p, n) {
+      const dust = currentWorld().stardust
+      if (!dust) return
+      for (let i = 0; i < n; i++) {
+        const kind = dust.kinds[Math.floor(Math.random() * dust.kinds.length)]
+        fx.sparkle(p.set(player.position.x + rnd(-dust.reach, dust.reach), rnd(0.6, dust.height), player.position.z + rnd(-dust.reach, dust.reach)), kind, 0.3)
+      }
     },
   })
 
@@ -889,7 +857,7 @@ export function createLobby(scene, fx, sound) {
           async act() {
             if (!ad || adBusy) {
               sound.deny()
-              hud.toast(`The chest refills in ${mm(left)}`)
+              hud.toast(`Play ${mm(left)} more to open the chest`)
               return
             }
             adBusy = true
@@ -906,8 +874,21 @@ export function createLobby(scene, fx, sound) {
         ...base,
         kind: 'chest',
         text: 'Claim',
-        act() {
-          const coins = claimChest()
+        async act() {
+          if (adBusy) return
+          // Online the server decides (it counted the play time); offline the local clock does.
+          let coins = 0
+          if (net.connected) {
+            adBusy = true
+            const ok = await claimChestOnServer()
+            adBusy = false
+            if (!ok) {
+              sound.deny()
+              hud.toast('The chest is not ready yet')
+              return
+            }
+            coins = claimChest(true)
+          } else coins = claimChest()
           if (!coins) return
           chest.opened = 1
           sound.chestOpen(ch.x, ch.z)
@@ -919,7 +900,6 @@ export function createLobby(scene, fx, sound) {
       }
     },
     collectSign: collect,
-    setUpdateTimer: (t) => admin.timer.setText(t),
     setRarity(spec) {
       rarity.setText(spec.name, { colors: [spec.text], outline: '#0b0b12', outlineWidth: 18 })
     },
