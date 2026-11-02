@@ -383,7 +383,12 @@ export function createTrains(scene, fx, sound, hooks) {
       b.setEnabled(false)
     }
     setTimeout(() => {
-      for (const b of bodies) if (world.getRigidBody(b.handle)) removeBody(b)
+      for (const b of bodies) {
+        if (!world.getRigidBody(b.handle)) continue
+        // Rapier 0.14 hits `unreachable` on the next step if a disabled body is removed.
+        b.setEnabled(true)
+        removeBody(b)
+      }
     }, 250)
     for (const c of t.cars) {
       if (c.burning) fx.removeEmitter(c.burning)
