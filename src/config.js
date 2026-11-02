@@ -2,7 +2,7 @@
 
 // --- Identity -------------------------------------------------------------
 // Slug registered on bloxity.io (Legion.SDK.init + the matchmaker). Set VITE_GAME_SLUG when it differs.
-export const GAME_SLUG = import.meta.env.VITE_GAME_SLUG || 'climb-and-slide-for-eggs'
+export const GAME_SLUG = import.meta.env.VITE_GAME_SLUG || 'stop-the-train'
 export const GAME_TITLE = 'Stop the Train'
 
 // Forces the Bloxity SDK and avatar CDN to be treated as unavailable (see .env.example).
