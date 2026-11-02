@@ -292,6 +292,7 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     document.body.classList.toggle('hud-blur', reborn)
     render(kind)
     back.classList.add('on')
+    document.exitPointerLock?.() // the cursor has to be free to press the buttons
     sound.windowOpen()
     sound.setDucked(true)
   }

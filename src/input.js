@@ -1,5 +1,6 @@
 // Keyboard + mouse. WASD/arrows move (camera-relative, consumed by player.js),
-// drag on the world turns the camera (the cursor stays free for the HUD) and wheel
+// mouse look while pointer-locked (click grabs, Esc releases; drag where it is
+// refused or not yet granted) and wheel
 // zoom (consumed by camera.js), edge-triggered actions cleared by their consumer.
 // Touch controls (touch.js) write look/zoom/jump directly and move/sprint via
 // setTouchMove/setTouchSprint, which are merged with the keys here.
@@ -53,8 +54,19 @@ export function setTouchSprint(on) {
   recomputeMove()
 }
 
+export const isLocked = () => !!canvas && document.pointerLockElement === canvas
+// Pointer lock can reject (sandboxed frame, post-Escape cooldown); that is not a fault.
+export function requestLock() {
+  if (!canvas || isLocked()) return
+  const r = canvas.requestPointerLock?.()
+  if (r instanceof Promise) r.catch(() => {})
+}
+
 export function install(showMenu, canvasEl) {
   canvas = canvasEl
+  document.addEventListener('pointerlockchange', () => {
+    if (isLocked()) orbiting = false
+  })
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement) return
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
@@ -74,14 +86,19 @@ export function install(showMenu, canvasEl) {
   })
   window.addEventListener('pointerdown', (e) => {
     const onWorld = e.target === canvas
-    // The cursor stays free for the HUD (DROP CAR, Upgrade...): dragging the world turns the camera.
-    if (e.pointerType === 'mouse' && onWorld && (e.button === 0 || e.button === 2)) orbiting = true
+    if (e.button === 2 && !isLocked()) orbiting = true
+    if (e.button === 0 && onWorld && e.pointerType === 'mouse') {
+      // A click on the world takes the cursor (Esc gives it back; never on touch: there is no
+      // cursor). Until the lock lands (or where it is refused) the drag turns the camera instead.
+      requestLock()
+      if (!isLocked()) orbiting = true
+    }
   })
   window.addEventListener('pointerup', (e) => {
     if (e.button === 0 || e.button === 2) orbiting = false
   })
   window.addEventListener('pointermove', (e) => {
-    if (!orbiting) return
+    if (!orbiting && !isLocked()) return
     inputState.look.dx += e.movementX || 0
     inputState.look.dy += e.movementY || 0
   })

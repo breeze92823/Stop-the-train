@@ -513,6 +513,7 @@ export function createGym(scene, fx, sound, hud) {
     player.locked = true
     if (b.emitter) b.emitter.rate = b.cfg.aura.rate * 1.8
     hud.showStop(true)
+    document.exitPointerLock?.() // STOP TRAINING is a button: the cursor has to be free
     sound.benchLie(b.x, b.z)
   }
 
