@@ -94,7 +94,10 @@ export function createRail(scene, fx, sound, hooks) {
     parked.push(item)
     aura(item)
     announce()
-    if (!remote) hooks.onPark?.(item, spec, from, x)
+    if (!remote) {
+      hooks.onPark?.(item, spec, from, x)
+      hooks.onParked?.()
+    }
     return item
   }
 
@@ -109,7 +112,10 @@ export function createRail(scene, fx, sound, hooks) {
     parked.push(item)
     aura(item)
     announce()
-    if (!remote) hooks.onPark?.(item, spec, null, x)
+    if (!remote) {
+      hooks.onPark?.(item, spec, null, x)
+      hooks.onParked?.()
+    }
     return item
   }
 

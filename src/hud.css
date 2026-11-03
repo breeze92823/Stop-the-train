@@ -421,6 +421,78 @@
   text-overflow: ellipsis;
 }
 .hud-toast.on { opacity: 1; }
+/* Long messages (goals, milestones) wrap instead of being cut on a phone. */
+.hud-toast { white-space: normal; text-align: center; width: max-content; }
+
+/* --- Fair trains: the ladder chips, the next-step hint, the goals ------------------------------ */
+.hud-round {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: calc(var(--u) * 0.5);
+  margin-top: calc(var(--u) * 0.7);
+}
+.hud-round:empty { display: none; }
+.hud-round .chip {
+  padding: calc(var(--u) * 0.25) calc(var(--u) * 1);
+  border-radius: 999px;
+  border: calc(var(--u) * 0.2) solid #12120e;
+  font-size: max(11px, calc(var(--u) * 1.6));
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.hud-round .streak { background: linear-gradient(180deg, #ffd23a, #ff8a00); }
+.hud-round .up { background: linear-gradient(180deg, #ff6a5a, #c8141e); }
+.hud-round .down { background: linear-gradient(180deg, #5ae0ff, #1a7ae0); }
+.hud-round .comeback { background: linear-gradient(90deg, #c040ff, #ff4fb8); animation: hud-chip-pulse 1.2s ease-in-out infinite; }
+@keyframes hud-chip-pulse { 50% { transform: scale(1.07); } }
+
+.hud-hint {
+  display: none;
+  width: max-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: calc(var(--u) * 0.8) auto 0;
+  padding: calc(var(--u) * 0.7) calc(var(--u) * 1.8);
+  border-radius: calc(var(--u) * 1.2);
+  border: calc(var(--u) * 0.3) solid #12120e;
+  background: linear-gradient(180deg, rgba(40, 150, 255, 0.94), rgba(20, 80, 190, 0.94));
+}
+.hud-hint.on { display: block; animation: hud-hint-in 0.3s ease-out; }
+@keyframes hud-hint-in { from { opacity: 0; transform: translateY(calc(var(--u) * -1)); } }
+.hud-hint small { display: block; font-size: max(10px, calc(var(--u) * 1.5)); color: #bfeaff; }
+.hud-hint span { display: block; font-size: max(13px, calc(var(--u) * 2.3)); line-height: 1.2; }
+
+.hud-goals {
+  box-sizing: border-box;
+  width: max(132px, calc(var(--u) * 24));
+  padding: calc(var(--u) * 0.7) calc(var(--u) * 0.9);
+  border-radius: calc(var(--u) * 1.1);
+  border: calc(var(--u) * 0.25) solid #12120e;
+  background: rgba(14, 18, 30, 0.72);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.45);
+}
+.hud-goals:empty { display: none; }
+.hud-goals .t { font-size: max(12px, calc(var(--u) * 2)); color: #ffe14a; }
+.hud-goals .t small { font-size: 0.75em; color: #fff; }
+.hud-goals .g {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: calc(var(--u) * 0.6);
+  padding: calc(var(--u) * 0.3) calc(var(--u) * 0.6);
+  border-radius: calc(var(--u) * 0.6);
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  font-size: max(10px, calc(var(--u) * 1.5));
+  line-height: 1.2;
+}
+.hud-goals .g i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #2fd24a, #8bff12); opacity: 0.55; transition: width 0.3s; }
+.hud-goals .g span, .hud-goals .g b { position: relative; white-space: nowrap; }
+.hud-goals .g.done { opacity: 0.75; }
+.hud-goals .g.done i { background: #2fd24a; opacity: 0.8; }
 .hud-flash {
   position: absolute;
   inset: 0;
@@ -748,6 +820,12 @@ body.hud-blur canvas {
 .hud-rb.daily { --r: min(1.15vw, 1.6dvh, max(6.4px, min(0.5214vw, 1.01dvh))); width: calc(var(--r) * 83.4); }
 .hud-rb.fuse, .hud-rb.offline { width: calc(var(--r) * 64.4); }
 .hud-rb.fuse .x, .hud-rb.offline .x, .hud-rb.upgrade .x { width: calc(var(--r) * 7.8); }
+/* The train book: the Upgrades frame; trains not stopped yet are dark silhouettes. */
+.hud-rb.book .got { margin-left: calc(var(--r) * 1.8); font-size: calc(var(--r) * 3.4); line-height: 1; }
+.hud-rb.book .row { background-color: #3a3f4a; }
+.hud-rb.book .row.locked { background-image: linear-gradient(180deg, #2a2d36, #15161c); }
+.hud-rb.book .row.locked .ico svg { filter: brightness(0); opacity: 0.6; }
+.hud-rb.book .ico svg { top: calc(var(--r) * 1.1); }
 
 .hud-rb .list {
   box-sizing: border-box;
@@ -911,7 +989,7 @@ body.hud-blur canvas {
 @media (max-height: 480px) {
   .hud-left { top: calc(var(--safe-t) + var(--reserve-top) + 6px); }
   .hud-sep { display: none; }
-  .hud-right { top: 18vh; }
+  .hud-right { top: 18vh; gap: calc(var(--u) * 1.4); }
   .hud-friend { display: none; }
   .hud-comeback { display: none; }
   .hud-drop { bottom: calc(var(--safe-b) + 8px); }

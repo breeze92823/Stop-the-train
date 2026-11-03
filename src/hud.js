@@ -1,7 +1,8 @@
 import './hud.css'
 import { Vector3 } from 'three'
-import { DAILY, REBIRTH, SHOP, UPGRADES } from './config.js'
+import { DAILY, REBIRTH, SHOP, TRAINS, UPGRADES } from './config.js'
 import * as bloxity from './bloxity.js'
+import { ladderK, streakK } from './fair.js'
 import { buyShop, buyUpgrade, claimDaily, compact, dailyLeft, onChange, owns, rebirth, rebirthCost, shopPrice, skipRebirth, state, upgradeCost, upgradeLevel, upgradeValue } from './progress.js'
 import * as sound from './audio/index.js'
 
@@ -65,7 +66,11 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
   barWrap.style.display = 'none'
   const next = el('div', 'hud-next', `<div class="a st">NEXT TRAIN IS:</div><div class="b"></div><div class="c">X2 COINS</div>`)
   next.style.display = 'none'
-  top.append(timer, barWrap, next)
+  // The room's ladder under the timer / bar: win streak, how much harder or easier trains are, COMEBACK.
+  const roundInfo = el('div', 'hud-round')
+  // After a lost train: the next step toward stopping it (game.js nextStep), under the chips.
+  const hintEl = el('div', 'hud-hint', '<small class="st">NEXT STEP</small><span class="st"></span>')
+  top.append(timer, barWrap, next, roundInfo, hintEl)
   const nextName = next.querySelector('.b')
   const nextX2 = next.querySelector('.c')
   const title = timer.querySelector('.hud-timer-title')
@@ -104,6 +109,7 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
   const dailyBtn = hudBtn(I.gift, 'DAILY', '#ffffff', () => openWindow('daily'))
   const dailyLabel = el('small', 'st', '')
   dailyBtn.appendChild(dailyLabel)
+  hudBtn(I.train, 'TRAINS', '#ffe14a', () => openWindow('book'))
   left.appendChild(grid)
 
   // Right column.
@@ -126,6 +132,9 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     right.appendChild(b)
   }
   offer('power2', I.bicep('#ffc22e', '#ff7a12').replace('<svg', '<svg class="art"'), '<span class="c-yellow">x2</span> <span class="c-rainbow2">POWER</span>')
+  // This session's goals (goals.js).
+  const goalsEl = el('div', 'hud-goals')
+  right.appendChild(goalsEl)
 
   // Bottom.
   const friend = el('div', 'hud-friend', `${I.faces}<span class="st">Friend Boost: <em>+0%</em></span>`)
@@ -194,8 +203,8 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     if (back.classList.contains('on') && current === 'rebirth') fillRebirth()
     else if (back.classList.contains('on') && current === 'upgrade') {
       if (upgradeSig() !== upSig) render('upgrade')
-    } else if (back.classList.contains('on') && (current === 'daily' || current === 'fuse')) {
-      // the timer ticks in update()
+    } else if (back.classList.contains('on') && (current === 'daily' || current === 'fuse' || current === 'book')) {
+      // the timer ticks in update(); the book only changes on a derail (and is reopened to see it)
     } else if (back.classList.contains('on') && current) render(current)
   })
   function replay(e, cls) {
@@ -276,6 +285,15 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     } else if (kind === 'offline') {
       const o = offlineInfo
       win.innerHTML = `<div class="head"><h3 class="grad" data-t="WELCOME BACK!">WELCOME BACK!</h3>${close}</div><div class="body"><p class="ask st">You were away for ${awayText(o.away)}</p><div class="chance">${I.bicep('#ffc22e', '#ff7a12')}<b class="st">+${compact(o.gained)}</b></div><p class="ask sub st">STRENGTH EARNED OFFLINE${o.capped ? ` (MAX ${o.capHours}H)` : ''}</p><button type="button" class="go st" data-close>COLLECT</button></div>`
+    } else if (kind === 'book') {
+      // The collection book: every train tier, a silhouette until this player has stopped one.
+      const rows = TRAINS.map((t) => {
+        const n = state.trainsStopped[t.id] ?? 0
+        if (!n) return `<div class="row locked"><div class="ico">${I.train}</div><div class="info"><div class="name st">???</div><div class="desc st">Stop one to unlock it</div></div><div class="buys"><div class="maxed st">?</div></div></div>`
+        return `<div class="row" style="background-image:linear-gradient(180deg,${t.paint},${t.trim})"><div class="ico">${I.train}</div><div class="info"><div class="name st" style="color:${t.text[0]}">${t.name}</div><div class="desc st">Stopped ${compact(n)} ${n === 1 ? 'time' : 'times'}</div></div><div class="buys"><div class="maxed st">x${compact(n)}</div></div></div>`
+      }).join('')
+      const got = TRAINS.filter((t) => state.trainsStopped[t.id]).length
+      win.innerHTML = `<div class="head"><h3 class="grad" data-t="TRAIN BOOK">TRAIN BOOK</h3><span class="got st">${got}/${TRAINS.length}</span>${close}</div><div class="list">${rows}</div>`
     } else if (kind === 'store') {
       const item = (id, name, desc) => `<div class="hud-row"><div><strong class="st">${name}</strong><p>${desc}</p></div>${owns(id) ? go('none', 'OWNED', false) : go(`shop:${id}`, `${compact(shopPrice(id))} Coins`, true)}</div>`
       win.innerHTML = `${close}<h3 class="st">STORE</h3>${item('power2', 'x2 Power', `Every rep gives x${SHOP.power2.mult} Strength, forever.`)}${item('admin', 'Admin Bench', 'x200 Power on the rainbow bench in the gym.')}`
@@ -285,8 +303,9 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
   back.appendChild(win)
   function openWindow(kind) {
     current = kind
-    const reborn = ['rebirth', 'upgrade', 'daily', 'fuse', 'offline'].includes(kind)
-    win.className = reborn ? `hud-rb ${kind === 'rebirth' ? '' : kind}` : 'hud-win'
+    const reborn = ['rebirth', 'upgrade', 'daily', 'fuse', 'offline', 'book'].includes(kind)
+    // The train book uses the Upgrades window's frame and rows.
+    win.className = reborn ? `hud-rb ${kind === 'rebirth' ? '' : kind === 'book' ? 'upgrade book' : kind}` : 'hud-win'
     win.innerHTML = ''
     back.classList.toggle('clear', reborn)
     document.body.classList.toggle('hud-blur', reborn)
@@ -389,6 +408,18 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     bannerTimer = setTimeout(() => banner.classList.remove('on'), ms)
   }
 
+  let hintTimer = 0
+  function hint(text) {
+    if (banner.classList.contains('on')) return
+    hintEl.lastChild.textContent = text
+    hintEl.classList.add('on')
+    clearTimeout(hintTimer)
+    hintTimer = setTimeout(() => hintEl.classList.remove('on'), 6500)
+  }
+
+  let roundKey = ''
+  let goalsKey = ''
+
   let flashK = 0
   let gains = 0
   let promptPos = null
@@ -411,6 +442,29 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     floater,
     toast,
     showBanner,
+    hint,
+    // The ladder (game.g): win streak and its coin bonus, how much harder / easier trains are, COMEBACK.
+    setRoundInfo({ step, streak, comeback }) {
+      const key = `${step}|${streak}|${comeback}`
+      if (key === roundKey) return
+      roundKey = key
+      const chips = []
+      if (comeback) chips.push('<span class="chip comeback st">COMEBACK TRAIN · X2 COINS</span>')
+      if (streak > 0) chips.push(`<span class="chip streak st">STREAK x${streak} · +${Math.round((streakK(streak) - 1) * 100)}% COINS</span>`)
+      const k = Math.round((ladderK(step) - 1) * 100)
+      if (k) chips.push(`<span class="chip ${k > 0 ? 'up' : 'down'} st">TRAINS ${k > 0 ? '+' : ''}${k}% HP</span>`)
+      roundInfo.innerHTML = chips.join('')
+    },
+    // [{ text, have, target, done }] and which set this is.
+    setGoals(list, set) {
+      const key = JSON.stringify([list, set])
+      if (key === goalsKey) return
+      goalsKey = key
+      const rows = list
+        .map((g) => `<div class="g${g.done ? ' done' : ''}"><i style="width:${Math.min(100, (g.have / g.target) * 100)}%"></i><span class="st">${g.done ? '✔ ' : ''}${g.text}</span><b class="st">${compact(g.have)}/${compact(g.target)}</b></div>`)
+        .join('')
+      goalsEl.innerHTML = `<div class="t st">GOALS${set > 1 ? ` <small>SET ${set}</small>` : ''}</div>${rows}`
+    },
     flash(k) {
       flashK = Math.max(flashK, k)
     },
@@ -492,12 +546,12 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
       top.style.setProperty('--c1', spec.text[0])
       top.style.setProperty('--c2', spec.text[1])
     },
-    showTrain(spec, hp, reward = spec.reward) {
+    showTrain(spec, hp, reward = spec.reward, max = spec.hp) {
       timer.style.display = next.style.display = 'none'
       barWrap.style.display = ''
       nameEl.textContent = `${spec.name} TRAIN`
       rewardEl.textContent = compact(reward)
-      this.setTrainHp(hp, spec.hp, false)
+      this.setTrainHp(hp, max, false)
     },
     setTrainHp(hp, max, hit = true) {
       fill.style.width = `${Math.max(0, (hp / max) * 100)}%`

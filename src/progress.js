@@ -8,6 +8,7 @@ const now = () => Date.now() / 1000
 export const state = {
   ...PROGRESS.start,
   levels: {},
+  trainsStopped: {}, // the collection book: train tier id -> times stopped
   breaks: 0, // trains derailed
   robux: 0,
   strength: 0, // highest Strength ever reached (Strength resets on rebirth; the leaderboard ranks this)
@@ -22,22 +23,23 @@ export const state = {
 }
 
 // The fields the backend stores (its sanitize.ts): the whole save, sent as one snapshot.
-const SAVED = ['power', 'coins', 'luck', 'multiplier', 'rebirths', 'levels', 'breaks', 'robux', 'strength', 'dailyAt', 'dailyDay', 'powerMult', 'updateEnds', 'seeded', 'lastSeen', 'muted']
+const SAVED = ['power', 'coins', 'luck', 'multiplier', 'rebirths', 'levels', 'trainsStopped', 'breaks', 'robux', 'strength', 'dailyAt', 'dailyDay', 'powerMult', 'updateEnds', 'seeded', 'lastSeen', 'muted']
+const MAPS = ['levels', 'trainsStopped'] // saved as copies
 export const snapshot = () => {
   const out = {}
   state.strength = Math.max(state.strength, state.power)
-  for (const k of SAVED) out[k] = k === 'levels' ? { ...state.levels } : state[k]
+  for (const k of SAVED) out[k] = MAPS.includes(k) ? { ...state[k] } : state[k]
   return out
 }
 // A new player's state (also what a different account starts from).
 export function reset() {
-  Object.assign(state, { ...PROGRESS.start, levels: {}, breaks: 0, robux: 0, strength: 0, dailyAt: 0, dailyDay: 0, powerMult: 1, chestPlay: 0, updateEnds: 0, lastSeen: 0, seeded: false, muted: false })
+  Object.assign(state, { ...PROGRESS.start, levels: {}, trainsStopped: {}, breaks: 0, robux: 0, strength: 0, dailyAt: 0, dailyDay: 0, powerMult: 1, chestPlay: 0, updateEnds: 0, lastSeen: 0, seeded: false, muted: false })
   state.updateEnds = now() + PROGRESS.updateCountdown
 }
 // The server's save over the local state. Anything it lacks stays a new player's value.
 export function hydrate(doc) {
   reset()
-  for (const k of SAVED) if (doc[k] !== undefined && doc[k] !== null) state[k] = k === 'levels' ? { ...doc[k] } : doc[k]
+  for (const k of SAVED) if (doc[k] !== undefined && doc[k] !== null) state[k] = MAPS.includes(k) ? { ...doc[k] } : doc[k]
   if (!state.updateEnds || state.updateEnds < now()) state.updateEnds = now() + PROGRESS.updateCountdown
   state.rebirths = Math.max(state.rebirths, state.multiplier - 1)
   state.strength = Math.max(state.strength, state.power)
@@ -118,10 +120,15 @@ export function addPower(n) {
   emit()
 }
 
-export const addBreak = () => {
+// A derail this player was paid for: counted on the boards and in the collection book. True the
+// first time this tier is stopped (it pays a one-time bonus).
+export const addBreak = (trainId) => {
   state.breaks += 1
+  const first = !!trainId && !state.trainsStopped[trainId]
+  if (trainId) state.trainsStopped[trainId] = (state.trainsStopped[trainId] ?? 0) + 1
   save()
   emit()
+  return first
 }
 
 // Seconds of play still needed for the chest. The server counts them (net.js sets chestPlay from its

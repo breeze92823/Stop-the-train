@@ -223,7 +223,8 @@ export function createTrains(scene, fx, sound, hooks) {
   }
 
   // `at`: `startHead`: join a train that is already running (shared round) at this position.
-  function spawn(spec, hp, startHead) {
+  // `maxHp`: the HP it was sized to (fair.js), which its HP bar and braking are measured against.
+  function spawn(spec, hp, startHead, maxHp = hp) {
     const head = startHead ?? TRACK.mouth + spec.speed * ROUND.approachSeconds
     const cars = []
     let at = head
@@ -235,7 +236,7 @@ export function createTrains(scene, fx, sound, hooks) {
       at += model.L + GAP
       cars.push(c)
     })
-    t = { spec, cars, head, length: at - head, speed: spec.speed, target: spec.speed, hp, maxHp: spec.hp, state: 'run', timer: 0, horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
+    t = { spec, cars, head, length: at - head, speed: spec.speed, target: spec.speed, hp, maxHp, state: 'run', timer: 0, horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
     const loco = cars[0]
     t.smoke = fx.addEmitter({
       rate: 34,
@@ -389,7 +390,7 @@ export function createTrains(scene, fx, sound, hooks) {
     const loco = t.cars[0]
     const nose = loco.group.position.x - loco.model.L / 2
     explodeAt(nose + 1, 3, TRACK.z, 1.5)
-    hooks.onDerail(t)
+    if (!hooks.shared?.()) hooks.onDerail(t) // online shared.js reports it, with the server's pay
     sound.derail(nose)
     // The chain reaction down the train.
     const plan = [[0.32, 0], [0.75, 1], [1.15, 0], [1.6, 2], [2.2, 1], [3.2, 0]]

@@ -10,7 +10,8 @@
 import { Client } from '@colyseus/sdk'
 import { DEFAULT_WORLD, DEV_MODE, NET, SERVER_URL } from './config.js'
 import * as bloxity from './bloxity.js'
-import { hydrate, onSave, reset, setChestPlay, snapshot, state as progress, tickChestPlay, touchSeen } from './progress.js'
+import { hydrate, onChange, onSave, reset, setChestPlay, snapshot, state as progress, tickChestPlay, touchSeen, upgradeLevel } from './progress.js'
+import { parkHp } from './fair.js'
 
 export const net = {
   room: null,
@@ -91,6 +92,20 @@ export function sendWorld(id) {
   net.world = id
   syncWorld()
 }
+
+// --- Fair trains -----------------------------------------------------------------
+// The server sizes each world's trains to the players in it (backend fair.ts), so it is told this
+// player's Strength and Carry level whenever what they can lift changes.
+let statsKey = ''
+function syncStats() {
+  if (!net.connected) return
+  const carry = upgradeLevel('carry')
+  const key = String(parkHp(progress.power, carry))
+  if (key === statsKey) return
+  statsKey = key
+  send('stats', { power: progress.power, carry })
+}
+onChange(() => syncStats())
 
 // --- Leaderboards -------------------------------------------------------------
 const boardListeners = new Set()
@@ -256,6 +271,8 @@ function attach(room) {
     chestWait?.(!!m?.ok)
   })
   sendVisible()
+  statsKey = ''
+  syncStats()
   room.onMessage('adResult', (m) => {
     if (adWait && (!m?.placement || m.placement === adWait.placement)) adWait.finish(!!m?.ok)
   })

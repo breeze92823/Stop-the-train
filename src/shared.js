@@ -14,6 +14,7 @@ export function createShared({ game, rail, trains, hud }) {
   const theirs = (by) => !!by && by !== net.sessionId
   const specOf = (idx) => TRAINS[Math.min(idx, TRAINS.length - 1)]
   const elsewhere = (snap) => !!snap.world && snap.world !== net.world
+  const apply = (snap) => game.apply(snap, specOf(snap.idx), mine(snap.underdog))
 
   // Parking: tell the server; the throw already happened here, the echo is ignored (same id).
   rail.setOnPark((item, spec, from, x) => {
@@ -31,8 +32,7 @@ export function createShared({ game, rail, trains, hud }) {
       rail.reset()
       for (const v of snap.rail) rail.seed(v.spec, v.x, 0, v.id, true, theirs(v.by))
     }
-    const spec = specOf(snap.idx)
-    game.apply(snap, spec)
+    apply(snap)
     if (snap.phase === 'run') {
       if (!trains.active) game.startTrain(snap.head)
     } else {
@@ -67,14 +67,15 @@ export function createShared({ game, rail, trains, hud }) {
     const t = trains.active
     if (!t) return
     trains.netDerail()
-    game.hooks.onDerail(t, m.contributors.some(mine))
+    // The server splits the reward by damage (fair.ts): `pay` is per sessionId.
+    const pay = m.pay?.[net.sessionId] ?? 0
+    game.hooks.onDerail(t, { rewarded: m.contributors.some(mine), pay, streak: m.streak ?? 0, milestone: m.milestone ?? null })
   })
 
   onNetMessage('gone', (m) => {
     if (elsewhere(m)) return
-    const spec = specOf(m.idx)
     trains.netFinish(m.result)
-    game.apply(m, spec)
+    apply(m)
     g.phase = 'countdown'
   })
 

@@ -16,6 +16,7 @@ import { createGym } from './gym.js'
 import { createCoins } from './coins.js'
 import { createGame } from './game.js'
 import { createShared } from './shared.js'
+import { createGoals } from './goals.js'
 import { createWorlds } from './worlds.js'
 import { currentWorld } from './theme.js'
 import { createHud } from './hud.js'
@@ -145,9 +146,11 @@ const hud = createHud({
   onFuse: () => fuse.run(),
 })
 lobby.setHud(hud)
+const goals = createGoals(hud, sound)
 const rail = createRail(scene, fx, sound, {
   onChange: (hp, count) => lobby.updateHp(hp, count),
   onLand: (x, z, force) => addShake(0.12 * force),
+  onParked: () => goals.add('park'), // the player's own throws (the Fuse Machine's drops too)
 })
 const coins = createCoins(scene, fx, sound, addCoins)
 const yard = createYard(scene, fx, sound, rail, hud, interact, (out) => animator?.handAnchor(out, YARD.handReach) ?? false)
@@ -155,7 +158,7 @@ const gym = createGym(scene, fx, sound, hud)
 const fuse = createFuse({ rail, yard, hud, lobby, fx, sound })
 player.onLockedJump = () => gym.stop()
 // Assigned just below: trains and the round loop need each other.
-const game = createGame({ fx, sound, hud, lobby, rail, coins, trains: { spawn: (...a) => trains.spawn(...a) } })
+const game = createGame({ fx, sound, hud, lobby, rail, coins, goals, trains: { spawn: (...a) => trains.spawn(...a) } })
 const trains = createTrains(scene, fx, sound, game.hooks)
 game.seed()
 const shared = createShared({ game, rail, trains, hud })
@@ -369,6 +372,7 @@ function frame(real, elapsed) {
   governQuality(real)
   shared.update()
   game.update(real)
+  if (gym.active()) goals.add('train', real)
   const dt = real * game.g.timeScale
 
   stepPhysics(dt) // runs the player controller + world at the fixed rate, interpolates bodies
