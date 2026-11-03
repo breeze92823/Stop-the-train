@@ -11,7 +11,7 @@ const MAX_SPENT = 24
 
 const toLocal = new Quaternion()
 const hit = new Vector3()
-const dir = new Vector3()
+const push = new Vector3()
 const rnd = (a, b) => a + Math.random() * (b - a)
 
 export function createRail(scene, fx, sound, hooks) {
@@ -149,17 +149,18 @@ export function createRail(scene, fx, sound, hooks) {
     spent.push(item)
   }
 
-  // The eastmost vehicle the train's nose has reached, if any.
-  function nextAt(front) {
+  // The vehicle the train's nose has reached first along its way, if any. `dir`: the train's, -1 westbound.
+  function nextAt(front, dir = -1) {
     let best = null
     for (const v of parked) {
-      const px = v.vehicle.root.position.x + v.halfLen
-      if (px >= front - 0.2 && (!best || v.vehicle.root.position.x > best.vehicle.root.position.x)) best = v
+      const x = v.vehicle.root.position.x
+      if (dir * (x - dir * v.halfLen) <= dir * front + 0.2 && (!best || -dir * x > -dir * best.vehicle.root.position.x)) best = v
     }
     return best
   }
 
-  function smash(item, speed) {
+  // A train going `dir` (-1 west, +1 east) hits `item`: crumple the side facing it and throw it ahead.
+  function smash(item, speed, dir = -1) {
     const i = parked.indexOf(item)
     if (i >= 0) parked.splice(i, 1)
     const { root, model } = item.vehicle
@@ -170,28 +171,28 @@ export function createRail(scene, fx, sound, hooks) {
     // Fold the side that took it.
     toLocal.set(r.x, r.y, r.z, r.w).invert()
     hit.set(model.hx, rnd(-0.1, 0.4), rnd(-0.4, 0.4)).applyQuaternion(new Quaternion(r.x, r.y, r.z, r.w))
-    hit.x = Math.abs(hit.x)
+    hit.x = -dir * Math.abs(hit.x)
     hit.applyQuaternion(toLocal)
-    dir.set(-1, rnd(0.1, 0.5), rnd(-0.4, 0.4)).applyQuaternion(toLocal)
-    crumple(item.vehicle, hit.x, hit.y, hit.z, dir.x, dir.y, dir.z, model.hx * 1.5, 1.1)
-    crumple(item.vehicle, -hit.x * 0.6, rnd(0, 0.5), -hit.z, dir.x * 0.5, 0.6, dir.z, model.hx * 0.9, 0.5)
+    push.set(dir, rnd(0.1, 0.5), rnd(-0.4, 0.4)).applyQuaternion(toLocal)
+    crumple(item.vehicle, hit.x, hit.y, hit.z, push.x, push.y, push.z, model.hx * 1.5, 1.1)
+    crumple(item.vehicle, -hit.x * 0.6, rnd(0, 0.5), -hit.z, push.x * 0.5, 0.6, push.z, model.hx * 0.9, 0.5)
 
     const launch = Math.max(9, speed)
-    b.setLinvel({ x: -launch * rnd(1.15, 1.8), y: rnd(6, 13) + speed * 0.18, z: rnd(-1, 1) * rnd(3, 11) }, true)
+    b.setLinvel({ x: dir * launch * rnd(1.15, 1.8), y: rnd(6, 13) + speed * 0.18, z: rnd(-1, 1) * rnd(3, 11) }, true)
     b.setAngvel({ x: rnd(-7, 7), y: rnd(-5, 5), z: rnd(-8, 8) }, true)
     b.setAngularDamping(0.15)
 
-    const px = t.x + model.hx * 0.5
+    const px = t.x - dir * model.hx * 0.5
     const py = t.y
     const pz = t.z
-    fx.sparks(px, py, pz, 70, 21, -0.5, 0.5)
+    fx.sparks(px, py, pz, 70, 21, dir * 0.5, 0.5)
     fx.fireball(px, py, pz, 0.8, 4)
-    fx.glass(px, py + 0.4, pz, 20, -0.6)
-    fx.debris(px, py, pz, 12, [item.spec.paint, item.spec.paint, '#1a1a1e', '#8c8c96'], 16, -0.7)
+    fx.glass(px, py + 0.4, pz, 20, dir * 0.6)
+    fx.debris(px, py, pz, 12, [item.spec.paint, item.spec.paint, '#1a1a1e', '#8c8c96'], 16, dir * 0.7)
     fx.smokeBurst(px, py, pz, 5, 1.8, 'smoke')
     fx.flash(px, py + 1, pz, 240, 7, '#ffcf9a')
     fx.dustRing(t.x, t.z, 2.6, 12, 'grass')
-    if (Math.random() < 0.7) fx.wheel(t.x, 0.8, t.z + rnd(-1, 1), -speed * rnd(1, 1.6), rnd(5, 10), rnd(-7, 7))
+    if (Math.random() < 0.7) fx.wheel(t.x, 0.8, t.z + rnd(-1, 1), dir * speed * rnd(1, 1.6), rnd(5, 10), rnd(-7, 7))
     sound.crunch(t.x, t.z, Math.min(1, 0.55 + model.hx * 0.1))
     item.age = 0
     if (item.flame) fx.removeEmitter(item.flame)

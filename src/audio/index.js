@@ -316,10 +316,10 @@ export function horn(x, blasts = 2) {
   }
 }
 
-// A crossing bell for the last seconds.
-export function bell() {
+// A crossing bell for the last seconds, at `x` on the line (the side the train is coming from).
+export function bell(x = TRACK.mouth * 0.5) {
   if (!ready()) return
-  const s = at(TRACK.mouth * 0.5, TRACK.z)
+  const s = at(x, TRACK.z)
   const v = Math.max(0.3, s.vol)
   modal({ f: 1046, modes: [[1, 1, 0.42], [2.01, 0.6, 0.3], [2.98, 0.4, 0.2], [4.18, 0.22, 0.12]], gain: 0.26 * v, strike: 0.2, verb: 0.35, pan: s.pan })
 }
@@ -463,8 +463,8 @@ export function trainTick(t, dt) {
   }
   // The part of the train nearest the listener carries the sound.
   const headX = t.head
-  const tailX = t.head + t.length
-  const nearX = Math.max(headX, Math.min(tailX, cam.pos.x))
+  const tailX = t.head - t.dir * t.length
+  const nearX = Math.max(Math.min(headX, tailX), Math.min(Math.max(headX, tailX), cam.pos.x))
   const s = at(nearX, TRACK.z)
   const speedK = t.speed / 30
   set(live.out.gain, s.vol * (0.6 + speedK * 0.5))
@@ -472,8 +472,8 @@ export function trainTick(t, dt) {
   // Doppler from the head's motion toward the listener.
   const dx = cam.pos.x - headX
   const d = Math.hypot(dx, cam.pos.z - TRACK.z) || 1
-  const closing = ((dx / d) * -t.speed) / 340
-  const doppler = headX > cam.pos.x ? 1 + Math.abs(closing) * 2.4 : 1 - Math.abs(closing) * 2.4
+  const closing = ((dx / d) * t.dir * t.speed) / 340
+  const doppler = t.dir * dx > 0 ? 1 + Math.abs(closing) * 2.4 : 1 - Math.abs(closing) * 2.4 // still ahead of the nose: pitched up
   for (const { o, ratio } of live.oscs) set(o.frequency, (34 + 26 * speedK) * ratio * doppler)
   set(live.whine.frequency, (1100 + 900 * speedK) * doppler)
   set(live.lp.frequency, 220 + 300 * speedK + (1 - s.far) * 200)

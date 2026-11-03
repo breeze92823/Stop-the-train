@@ -441,6 +441,7 @@
   line-height: 1.2;
   white-space: nowrap;
 }
+.hud-round .from { background: linear-gradient(180deg, #5b6474, #2c323e); }
 .hud-round .streak { background: linear-gradient(180deg, #ffd23a, #ff8a00); }
 .hud-round .up { background: linear-gradient(180deg, #ff6a5a, #c8141e); }
 .hud-round .down { background: linear-gradient(180deg, #5ae0ff, #1a7ae0); }

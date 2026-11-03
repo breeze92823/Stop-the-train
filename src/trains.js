@@ -7,7 +7,8 @@ import { paintSoftDot } from './textures.js'
 
 // Trains: procedural diesels and wagons that run the rails as kinematic bodies (so they
 // shove parked cars into a pile for real) and turn into dynamic, coupled rigid bodies the
-// instant their HP runs out, so the derailment is an actual jackknife. Trains face -X.
+// instant their HP runs out, so the derailment is an actual jackknife. The models face -X; a train's
+// `dir` is -1 (out of the east tunnel, heading west) or +1 (out of the west one: its cars turned round).
 const WHEEL_R = 0.56
 const GAP = 1.1 // m between couplers
 const COUPLER = { massShare: 1 / 8, stiffness: 0.3 } // share of a car's mass felt at a coupler; share of the gap closed per tick
@@ -198,9 +199,10 @@ export function createTrains(scene, fx, sound, hooks) {
 
   let t = null // the running train
 
-  function makeCar(model, x) {
+  function makeCar(model, x, dir) {
     const group = new Group()
     group.position.set(x, TRACK.top + model.H / 2, TRACK.z)
+    if (dir > 0) group.rotation.y = Math.PI
     const mesh = new Mesh(model.geometry, sharedMaterial())
     mesh.position.y = -model.H / 2
     mesh.castShadow = true
@@ -215,6 +217,7 @@ export function createTrains(scene, fx, sound, hooks) {
     })
     scene.add(group)
     const desc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(group.position.x, group.position.y, group.position.z)
+    if (dir > 0) desc.setRotation({ x: 0, y: 1, z: 0, w: 0 }) // half a turn about Y: nose to +X
     const body = world.createRigidBody(desc)
     const col = RAPIER.ColliderDesc.cuboid(model.L / 2, model.H / 2 - 0.1, 2).setDensity(0.9).setFriction(0.22).setRestitution(0.08)
     world.createCollider(col, body)
@@ -224,25 +227,27 @@ export function createTrains(scene, fx, sound, hooks) {
 
   // `at`: `startHead`: join a train that is already running (shared round) at this position.
   // `maxHp`: the HP it was sized to (fair.js), which its HP bar and braking are measured against.
-  function spawn(spec, hp, startHead, maxHp = hp) {
-    const head = startHead ?? TRACK.mouth + spec.speed * ROUND.approachSeconds
+  // `dir`: -1 westbound (from the east tunnel), +1 eastbound.
+  function spawn(spec, hp, startHead, maxHp = hp, dir = -1) {
+    const head = startHead ?? -dir * (TRACK.mouth + spec.speed * ROUND.approachSeconds)
     const cars = []
-    let at = head
+    let back = 0 // m from the nose to this car's front, back along the train
     const list = ['loco', ...spec.wagons]
     list.forEach((kind) => {
       const model = modelFor(spec, kind)
-      const c = makeCar(model, at + model.L / 2)
-      c.offset = at + model.L / 2 - head
-      at += model.L + GAP
+      const offset = -dir * (back + model.L / 2)
+      const c = makeCar(model, head + offset, dir)
+      c.offset = offset
+      back += model.L + GAP
       cars.push(c)
     })
-    t = { spec, cars, head, length: at - head, speed: spec.speed, target: spec.speed, hp, maxHp, state: 'run', timer: 0, horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
+    t = { spec, dir, cars, head, length: back, speed: spec.speed, target: spec.speed, hp, maxHp, state: 'run', timer: 0, horned: false, shake: 0, events: [], brake: 0, hitSmoke: 0, grindCd: 0, gougeCd: 0 }
     const loco = cars[0]
     t.smoke = fx.addEmitter({
       rate: 34,
       tick(p, n) {
         if (!t || t.state !== 'run') return false
-        p.set(loco.group.position.x + loco.model.stack[0], TRACK.top + loco.model.stack[1], TRACK.z)
+        p.set(loco.group.position.x - dir * loco.model.stack[0], TRACK.top + loco.model.stack[1], TRACK.z)
         for (let i = 0; i < n; i++) fx.puff(p, 0.7, 'smoke', 5, 1.8, 0.8, t.speed * 0.1)
       },
     })
@@ -288,8 +293,9 @@ export function createTrains(scene, fx, sound, hooks) {
   function hitPlayer() {
     const p = player.position
     if (p.y > 6 || Math.abs(p.z - TRACK.z) > 3.2) return
-    if (p.x < t.head - 1 || p.x > t.head + t.length) return
-    launchPlayer(-t.speed * 0.9, 13, Math.sign(p.z - TRACK.z || 1) * 15)
+    // From just ahead of the nose to the tail.
+    if (t.dir * (p.x - t.head) > 1 || t.dir * (t.head - p.x) > t.length) return
+    launchPlayer(t.dir * t.speed * 0.9, 13, Math.sign(p.z - TRACK.z || 1) * 15)
     sound.body(p.x, p.z)
     fx.dustRing(p.x, p.z, 1.6, 10)
   }
@@ -327,18 +333,19 @@ export function createTrains(scene, fx, sound, hooks) {
     const shared = hooks.shared?.()
     // Shared round: the server owns speed, hits and HP; the head only eases toward its last report.
     if (!shared) t.speed += Math.sign(t.target - t.speed) * Math.min(Math.abs(t.target - t.speed), 7 * dt)
-    t.head -= t.speed * dt
+    t.head += t.dir * t.speed * dt
     if (shared && t.netHead != null) t.head += (t.netHead - t.head) * Math.min(1, 8 * dt)
+    const through = t.dir * t.head - t.length > TRACK.mouth + 6 // the tail is inside the far tunnel
     for (const c of t.cars) {
       c.roll += (t.speed * dt) / WHEEL_R
       c.body.setNextKinematicTranslation({ x: t.head + c.offset, y: TRACK.top + c.model.H / 2, z: TRACK.z })
     }
     hitPlayer()
     if (shared) {
-      if (t.head + t.length < -TRACK.mouth - 6) finish('through')
+      if (through) finish('through')
       return
     }
-    let v = hooks.nextVehicle(t.head)
+    let v = hooks.nextVehicle(t.head, t.dir)
     while (v) {
       const hp = t.hp
       const damage = Math.min(v.hp, hp)
@@ -352,9 +359,9 @@ export function createTrains(scene, fx, sound, hooks) {
         derail()
         return
       }
-      v = hooks.nextVehicle(t.head)
+      v = hooks.nextVehicle(t.head, t.dir)
     }
-    if (t.head + t.length < -TRACK.mouth - 6) finish('through')
+    if (through) finish('through')
   }
   onTick(step)
 
@@ -382,14 +389,14 @@ export function createTrains(scene, fx, sound, hooks) {
       const flip = side * (i % 2 ? -1 : 1)
       const s = speed * (1 + 0.1 * i)
       // The locomotive rears up and rolls; the wagons behind jackknife left and right.
-      c.body.setLinvel({ x: -s, y: i === 0 ? 8.5 : 2.5 + Math.random() * 3, z: flip * (i === 0 ? 7.5 : 4 + Math.random() * 4) }, true)
-      c.body.setAngvel({ x: flip * (i === 0 ? 2.4 : 0.9 + Math.random() * 1.1), y: flip * (i === 0 ? 1.1 : 0.7 + Math.random() * 0.7), z: i === 0 ? -0.65 : (Math.random() - 0.5) * 0.7 }, true)
+      c.body.setLinvel({ x: t.dir * s, y: i === 0 ? 8.5 : 2.5 + Math.random() * 3, z: flip * (i === 0 ? 7.5 : 4 + Math.random() * 4) }, true)
+      c.body.setAngvel({ x: flip * (i === 0 ? 2.4 : 0.9 + Math.random() * 1.1), y: flip * (i === 0 ? 1.1 : 0.7 + Math.random() * 0.7), z: i === 0 ? t.dir * 0.65 : (Math.random() - 0.5) * 0.7 }, true)
       c.body.setLinearDamping(0.08)
       c.body.setAngularDamping(0.25)
     })
     const loco = t.cars[0]
-    const nose = loco.group.position.x - loco.model.L / 2
-    explodeAt(nose + 1, 3, TRACK.z, 1.5)
+    const nose = loco.group.position.x + (t.dir * loco.model.L) / 2
+    explodeAt(nose - t.dir, 3, TRACK.z, 1.5)
     if (!hooks.shared?.()) hooks.onDerail(t) // online shared.js reports it, with the server's pay
     sound.derail(nose)
     // The chain reaction down the train.
@@ -450,9 +457,9 @@ export function createTrains(scene, fx, sound, hooks) {
     if (!t) return
     if (t.state === 'run') {
       for (const c of t.cars) for (const a of c.axles) a.rotation.z = c.roll
-      const noseX = t.cars[0].group.position.x - t.cars[0].model.L / 2
+      const noseX = t.cars[0].group.position.x + (t.dir * t.cars[0].model.L) / 2
       const y = TRACK.top + 2.6
-      beam.position.set(noseX - 0.4, y + 0.5, TRACK.z)
+      beam.position.set(noseX + t.dir * 0.4, y + 0.5, TRACK.z)
       beam.material.opacity = 0.9
       if (t.brake > 0) {
         t.brake = Math.max(0, t.brake - dt * 0.7)

@@ -443,12 +443,13 @@ export function createHud({ onDrop, onStop, onHoldStart, onHoldEnd, railCap, onF
     toast,
     showBanner,
     hint,
-    // The ladder (game.g): win streak and its coin bonus, how much harder / easier trains are, COMEBACK.
-    setRoundInfo({ step, streak, comeback }) {
-      const key = `${step}|${streak}|${comeback}`
+    // The round (game.g): which tunnel the train comes out of, then the ladder: win streak and its coin
+    // bonus, how much harder / easier trains are, COMEBACK.
+    setRoundInfo({ dir, step, streak, comeback }) {
+      const key = `${dir}|${step}|${streak}|${comeback}`
       if (key === roundKey) return
       roundKey = key
-      const chips = []
+      const chips = [`<span class="chip from st">${dir > 0 ? 'FROM THE WEST TUNNEL' : 'FROM THE EAST TUNNEL'}</span>`]
       if (comeback) chips.push('<span class="chip comeback st">COMEBACK TRAIN · X2 COINS</span>')
       if (streak > 0) chips.push(`<span class="chip streak st">STREAK x${streak} · +${Math.round((streakK(streak) - 1) * 100)}% COINS</span>`)
       const k = Math.round((ladderK(step) - 1) * 100)

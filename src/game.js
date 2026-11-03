@@ -1,5 +1,5 @@
 import { Vector3 } from 'three'
-import { ADS, COINS, FAIR, ROUND, SET, TRAINS, UPGRADES, VARIANTS, VEHICLE_NAMES, YARD } from './config.js'
+import { ADS, COINS, FAIR, ROUND, SET, TRACK, TRAINS, UPGRADES, VARIANTS, VEHICLE_NAMES, YARD } from './config.js'
 import { addBreak, addCoins, compact, rebirthCost, state as progress, upgradeCost, upgradeLevel } from './progress.js'
 import { bestHp, parkHp, sizeTrain, spreadK, streakK } from './fair.js'
 import { player } from './player.js'
@@ -58,6 +58,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
     comeback: false, // the x2 COMEBACK train
     underdogMe: false, // online: this player is the room's weakest (+50% coins)
     spread: 1,
+    dir: -1, // -1: this train comes out of the east tunnel, +1: out of the west one (random per train)
     timeScale: 1,
     slow: 0,
     lastSecond: 0,
@@ -74,6 +75,8 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
     lobby.setRarity(g.spec)
   }
   sizeLocal()
+  const pickDir = () => (Math.random() < 0.5 ? 1 : -1)
+  g.dir = pickDir()
   const total = () => Math.round(g.reward * (g.doubled ? 2 : 1) * streakK(g.streak))
 
   // Offset the shake by how far the listener is from the blast.
@@ -102,13 +105,13 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
 
   const hooks = {
     shared: () => g.shared,
-    nextVehicle: (front) => rail.nextAt(front),
+    nextVehicle: (front, dir) => rail.nextAt(front, dir),
     // `mine`: the coins of a hit go to the player whose vehicle it was (everyone in local play).
     onHit(v, damage, t, speed, mine = true) {
       const p = v.vehicle.root.position
       pos.set(p.x, p.y + 2.2, p.z)
       hud.floater(pos, damage > 0 ? `-${compact(damage)} HP` : 'MAXED OUT! TEAM UP!', damage > 0 ? undefined : '#ffb0b0')
-      rail.smash(v, speed)
+      rail.smash(v, speed, t.dir)
       hud.setTrainHp(t.hp, t.maxHp)
       g.hp = t.hp
       shakeFrom(p.x, p.z, 0.3)
@@ -193,6 +196,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
       }
       g.comeback = g.losses >= FAIR.comebackAfter
       g.spread = spreadK(Math.random())
+      g.dir = pickDir()
       sizeLocal()
       g.back = false
       g.doubled = Math.random() < ROUND.doubleChance || g.comeback
@@ -204,7 +208,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
     if (!g.shared) sizeLocal() // the train leaves sized to the player as they are now
     g.phase = 'train'
     hud.showTrain(g.spec, g.hp, total(), g.maxHp)
-    trains.spawn(g.spec, g.hp, head, g.maxHp)
+    trains.spawn(g.spec, g.hp, head, g.maxHp, g.dir)
   }
 
   function update(dt) {
@@ -224,9 +228,11 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
       if (s !== g.lastSecond) {
         g.lastSecond = s
         if (s <= ROUND.warnSeconds && s > 0) {
+          // The crossing bell rings on the side the train is coming from.
+          const bellX = -g.dir * TRACK.mouth * 0.5
           sound.tick(s)
-          sound.bell()
-          setTimeout(sound.bell, 480)
+          sound.bell(bellX)
+          setTimeout(() => sound.bell(bellX), 480)
         }
       }
       if (s <= ROUND.warnSeconds) {
@@ -256,7 +262,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
   function restart() {
     owed.length = 0
     overkill = false
-    Object.assign(g, { phase: 'countdown', left: ROUND.firstCountdown, back: false, doubled: true, step: 0, streak: 0, losses: 0, comeback: false, underdogMe: false, spread: 1, timeScale: 1, slow: 0, shared: false })
+    Object.assign(g, { phase: 'countdown', left: ROUND.firstCountdown, back: false, doubled: true, step: 0, streak: 0, losses: 0, comeback: false, underdogMe: false, spread: 1, dir: pickDir(), timeScale: 1, slow: 0, shared: false })
     sizeLocal()
     seed()
   }
@@ -274,6 +280,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins, goals }
     g.streak = snap.streak ?? 0
     g.losses = snap.losses ?? 0
     g.comeback = !!snap.comeback
+    g.dir = snap.dir === 1 ? 1 : -1
     g.underdogMe = underdogMe
     lobby.setRarity(spec)
   }
