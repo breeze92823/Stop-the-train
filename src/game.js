@@ -114,6 +114,7 @@ export function createGame({ fx, sound, hud, lobby, rail, trains, coins }) {
       const paid = result === 'through' ? payOwed(ROUND.throughShare) : 0
       owed.length = 0
       rail.sweep()
+      if (result === 'stopped') rail.clearAll() // a crashed train leaves a clean railway
       if (result === 'through') {
         hud.showBanner('THE TRAIN GOT THROUGH!', paid ? `GRAB YOUR ${compact(paid)} COINS BY THE RAIL!` : 'PARK MORE VEHICLES!', 4200)
         sound.trainLost()

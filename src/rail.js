@@ -263,11 +263,24 @@ export function createRail(scene, fx, sound, hooks) {
     announce()
   }
 
+  // After a wreck the whole railway is cleaned: every vehicle left on it and every smashed one lying
+  // around shrinks away in a puff of dust.
+  function clearAll() {
+    for (const v of parked.splice(0)) {
+      unlockFromPlayer(v.body)
+      if (v.flame) fx.removeEmitter(v.flame)
+      v.flame = null
+      spent.push(v)
+    }
+    for (const v of spent) v.age = Math.max(v.age, SPENT_LIFE - rnd(0.5, 1.6))
+    announce()
+  }
+
   // Trembles the parked vehicles as a train closes in.
   function rumble(k) {
     if (k <= 0) return
     for (const v of parked) v.vehicle.mesh.position.y = -v.vehicle.model.cy + Math.sin(performance.now() * 0.05 + v.x) * 0.012 * k
   }
 
-  return { setOnPark: (fn) => (hooks.onPark = fn), park, seed, reset, discard, list, byId, dropAway, nextAt, smash, update, sweep, rumble, totals, count: () => parked.length, spentCount: () => spent.length }
+  return { setOnPark: (fn) => (hooks.onPark = fn), park, seed, reset, discard, list, byId, dropAway, nextAt, smash, update, sweep, clearAll, rumble, totals, count: () => parked.length, spentCount: () => spent.length }
 }
