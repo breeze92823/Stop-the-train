@@ -1,5 +1,5 @@
 import { AdditiveBlending, CanvasTexture, Group, Mesh, Quaternion, Sprite, SpriteMaterial, Vector3 } from 'three'
-import { ROUND, TRACK } from './config.js'
+import { PHYSICS, ROUND, TRACK } from './config.js'
 import { RAPIER, bindMesh, onTick, removeBody, unbindMesh, world } from './physics.js'
 import { Kit, SLOT, sharedMaterial } from './vehicles.js'
 import { launchPlayer, player } from './player.js'
@@ -175,10 +175,12 @@ const armB = new Vector3()
 const velA = new Vector3()
 const velB = new Vector3()
 
-// World point on a car's long axis, `x` from its centre; `arm` receives the offset from the centre.
+// World point on a car's long axis through its centre of mass (low: the frame is the heavy part), `x`
+// from the centre; `arm` receives the offset from the centre of mass, so pointVelocity is exact and a
+// coupler's pull has no lever to roll or pitch the car with.
 function couplerPoint(body, x, arm) {
   const r = body.rotation()
-  const c = body.translation()
+  const c = body.worldCom()
   arm.set(x, 0, 0).applyQuaternion(turn.set(r.x, r.y, r.z, r.w))
   return { x: c.x + arm.x, y: c.y + arm.y, z: c.z + arm.z }
 }
@@ -220,9 +222,13 @@ export function createTrains(scene, fx, sound, hooks) {
     if (dir > 0) desc.setRotation({ x: 0, y: 1, z: 0, w: 0 }) // half a turn about Y: nose to +X
     const body = world.createRigidBody(desc)
     const col = RAPIER.ColliderDesc.cuboid(model.L / 2, model.H / 2 - 0.1, 2).setDensity(0.9).setFriction(0.22).setRestitution(0.08)
-    world.createCollider(col, body)
+    const collider = world.createCollider(col, body)
+    // The frame, trucks and engine: most of a car's weight rides low, so a wreck slides and rolls
+    // onto its side like a heavy thing rather than tumbling end over end. Inside the hull, never touched.
+    const frame = RAPIER.ColliderDesc.cuboid(model.L / 2 - 0.5, 0.45, 1.5).setTranslation(0, 0.75 - model.H / 2, 0).setDensity(6)
+    world.createCollider(frame, body)
     bindMesh(body, group)
-    return { group, body, model, axles, offset: 0, burning: null, roll: 0 }
+    return { group, body, collider, model, axles, offset: 0, burning: null, roll: 0, tip: 0 }
   }
 
   // `at`: `startHead`: join a train that is already running (shared round) at this position.
@@ -325,10 +331,47 @@ export function createTrains(scene, fx, sound, hooks) {
     }
   }
 
+  // The first moments on the ground: the locomotive's nose ploughs into the ballast (a drag at its
+  // lowest front corner, on the side it is slewing to, which swings it out and dips it while the
+  // wagons pile into it), and the cars going over are levered onto their side by the wheels digging in.
+  function wreck() {
+    const W = ROUND.wreck
+    const dt = world.timestep
+    if (t.timer > W.ploughSeconds && t.timer > W.tipSeconds) return
+    const loco = t.cars[0]
+    const v = loco.body.linvel()
+    const sp = Math.hypot(v.x, v.z)
+    if (t.timer < W.ploughSeconds && sp > 2) {
+      const p = couplerPoint(loco.body, -loco.model.L / 2, armA)
+      p.y -= 1 // down to the pilot, just above the ground
+      p.z += t.side * 1.6
+      const k = (loco.body.mass() * W.plough * dt) / sp
+      loco.body.applyImpulseAtPoint({ x: -v.x * k, y: 0, z: -v.z * k }, p, true)
+    }
+    if (t.timer > W.tipSeconds) return
+    for (const c of t.cars) {
+      if (!c.tip) continue
+      const r = c.body.rotation()
+      turn.set(r.x, r.y, r.z, r.w)
+      if (out.set(0, 1, 0).applyQuaternion(turn).y < W.tipLean) {
+        c.tip = 0 // over the tipping point: gravity takes it from here
+        continue
+      }
+      // Torque about the long axis, pointed to +X so that a positive one tips the car toward +Z.
+      out.set(1, 0, 0).applyQuaternion(turn)
+      if (out.x < 0) out.negate()
+      const m = c.body.mass() * 3.4 * W.tip * c.tip * dt // ~ the hull's inertia about its long axis
+      c.body.applyTorqueImpulse({ x: out.x * m, y: out.y * m, z: out.z * m }, true)
+    }
+  }
+
   function step(dt) {
     if (!t) return
     t.timer += dt
-    if (t.state === 'derail') couple(dt)
+    if (t.state === 'derail') {
+      couple(dt)
+      wreck()
+    }
     if (t.state !== 'run') return
     const shared = hooks.shared?.()
     // Shared round: the server owns speed, hits and HP; the head only eases toward its last report.
@@ -381,18 +424,28 @@ export function createTrains(scene, fx, sound, hooks) {
     // However hard the last hits braked it, the wagons still carry the train's full weight.
     const speed = Math.max(t.speed, t.spec.speed * 0.82)
     const side = Math.random() < 0.5 ? -1 : 1
+    const W = ROUND.wreck
+    // Steel on earth, set so any train's wreck grinds to a halt in about W.slide metres (a fast one
+    // would otherwise end up in the tunnel); the nose's plough does a share of the braking.
+    const friction = Math.min(0.9, Math.max(0.12, (speed * speed / (2 * W.slide) - W.plough * 0.4) / -PHYSICS.gravity))
     t.state = 'derail'
     t.timer = 0
     t.finalSpeed = speed
+    t.side = side
     t.cars.forEach((c, i) => {
       c.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true)
-      const flip = side * (i % 2 ? -1 : 1)
-      const s = speed * (1 + 0.1 * i)
-      // The locomotive rears up and rolls; the wagons behind jackknife left and right.
-      c.body.setLinvel({ x: t.dir * s, y: i === 0 ? 8.5 : 2.5 + Math.random() * 3, z: flip * (i === 0 ? 7.5 : 4 + Math.random() * 4) }, true)
-      c.body.setAngvel({ x: flip * (i === 0 ? 2.4 : 0.9 + Math.random() * 1.1), y: flip * (i === 0 ? 1.1 : 0.7 + Math.random() * 0.7), z: i === 0 ? t.dir * 0.65 : (Math.random() - 0.5) * 0.7 }, true)
-      c.body.setLinearDamping(0.08)
-      c.body.setAngularDamping(0.25)
+      c.collider.setFriction(friction)
+      c.collider.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
+      const lead = i === 0
+      const flip = side * (i % 2 ? -1 : 1) // the wagons jackknife left and right behind it
+      const k = lead ? 1 : 0.5 + Math.random() * 0.6
+      // Every car keeps the train's momentum along the line: the nose jolts as the wheels climb the
+      // rail and swings out, the wagons zigzag; nothing leaves the ground for more than a bump.
+      c.body.setLinvel({ x: t.dir * speed * (0.98 + Math.random() * 0.05), y: W.hop * (lead ? 1 : Math.random() * 0.5), z: flip * W.slew * k }, true)
+      c.body.setAngvel({ x: 0, y: -t.dir * flip * W.yaw * k, z: 0 }, true)
+      c.body.setLinearDamping(W.linearDamping)
+      c.body.setAngularDamping(W.angularDamping)
+      c.tip = lead || Math.random() < W.tipChance ? flip : 0
     })
     const loco = t.cars[0]
     const nose = loco.group.position.x + (t.dir * loco.model.L) / 2
@@ -494,6 +547,16 @@ export function createTrains(scene, fx, sound, hooks) {
         if (Math.random() < 0.5) fx.puff(out, 1.3, 'dust', 1.4, 1.4, 0.8)
         if (carve && sp > 4) fx.scorch(c.group.position.x, c.group.position.z, 3.2, Math.atan2(-v.z, v.x), 2.2, 0.75)
       }
+    }
+    // Ballast and earth thrown up ahead of the ploughing nose.
+    const loco = t.cars[0]
+    const lv = loco.body.linvel()
+    const lsp = Math.hypot(lv.x, lv.z)
+    if (carve && lsp > 4) {
+      const p = couplerPoint(loco.body, -loco.model.L / 2, armA)
+      fx.debris(p.x, 0.4, p.z, 3, ['#6b5a45', '#8a7a66', '#4a4038', '#5c5c60'], 4 + lsp * 0.18, (lv.x / lsp) * 0.9, (lv.z / lsp) * 0.9 + t.side * 0.4, 0.35)
+      out.set(p.x, 0.5, p.z)
+      fx.puff(out, 2.2, 'dust', 1.8, 1.8, 0.9, lv.x * 0.25, lv.z * 0.25)
     }
     sound.grind(fastest, t.cars[0].group.position.x, t.cars[0].group.position.z)
     if (t.timer > ROUND.wreckSeconds) finish('stopped')

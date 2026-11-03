@@ -177,9 +177,12 @@ export function createRail(scene, fx, sound, hooks) {
     crumple(item.vehicle, hit.x, hit.y, hit.z, push.x, push.y, push.z, model.hx * 1.5, 1.1)
     crumple(item.vehicle, -hit.x * 0.6, rnd(0, 0.5), -hit.z, push.x * 0.5, 0.6, push.z, model.hx * 0.9, 0.5)
 
+    // Not thrown into the sky: the nose shoves it ahead at about the train's speed and the wedge plow
+    // deflects it off the line, so it hops once and tumbles away along the ground.
     const launch = Math.max(9, speed)
-    b.setLinvel({ x: dir * launch * rnd(1.15, 1.8), y: rnd(6, 13) + speed * 0.18, z: rnd(-1, 1) * rnd(3, 11) }, true)
-    b.setAngvel({ x: rnd(-7, 7), y: rnd(-5, 5), z: rnd(-8, 8) }, true)
+    const off = Math.sign(t.z - TRACK.z) || (Math.random() < 0.5 ? -1 : 1)
+    b.setLinvel({ x: dir * launch * rnd(1.02, 1.25), y: rnd(2.5, 4.5) + speed * 0.05, z: off * rnd(4, 9) }, true)
+    b.setAngvel({ x: off * rnd(1.5, 4), y: off * -dir * rnd(1.5, 4.5), z: rnd(-2, 2) }, true)
     b.setAngularDamping(0.15)
 
     const px = t.x - dir * model.hx * 0.5

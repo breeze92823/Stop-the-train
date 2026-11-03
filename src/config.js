@@ -558,6 +558,14 @@ export const ROUND = {
   approachSeconds: 2.6, // s the train rumbles inside the tunnel before it shows
   wreckSeconds: 11, // s a derailed train burns before it is cleared away
   slowMo: { scale: 0.28, seconds: 0.95, ease: 0.7 }, // time dilation the instant a train derails
+  // How a derailed train goes down (trains.js): it keeps its weight and momentum on the ground instead
+  // of being thrown. hop m/s up as the wheels climb the rail; slew m/s sideways and yaw rad/s of the
+  // nose swinging out; plough m/s^2 of drag at the locomotive's front corner for ploughSeconds (it
+  // slews it and lets the wagons pile into it); tip rad/s^2 that levers a car onto its side until it
+  // leans past tipLean (the up vector's y), for the locomotive and tipChance of the wagons (it has to
+  // beat gravity's pull back over the wheels, ~11); slide m the wreck grinds along before it stops
+  // (sets the friction); damping, the rest of the wreck's bleed.
+  wreck: { hop: 1.1, slew: 3.5, yaw: 0.45, plough: 8, ploughSeconds: 1.5, tip: 24, tipSeconds: 1.2, tipLean: 0.5, tipChance: 0.4, slide: 34, linearDamping: 0.05, angularDamping: 0.45 },
   nextShownAt: [60, 54], // s left on the countdown while the HUD says NEXT TRAIN IS
   doubleChance: 0.3, // a new train pays X2 COINS this often
   throughShare: 0.4, // share of a pass's hit coins still dropped when the train gets through
